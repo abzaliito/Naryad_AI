@@ -20,6 +20,10 @@ services:
       AI_MODEL: ${AI_MODEL:-}
       AI_API_KEY: ${AI_API_KEY:-}
       AI_SEND_PHOTOS: ${AI_SEND_PHOTOS:-false}
+      AI_DAILY_REQUEST_LIMIT: ${AI_DAILY_REQUEST_LIMIT:-150}
+      AI_USER_HOURLY_LIMIT: ${AI_USER_HOURLY_LIMIT:-20}
+      AI_ASSISTANT_MAX_TOKENS: ${AI_ASSISTANT_MAX_TOKENS:-1200}
+      AI_REVIEW_MAX_TOKENS: ${AI_REVIEW_MAX_TOKENS:-3000}
     volumes:
       - naryad_data:/app/data
     extra_hosts:

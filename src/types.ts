@@ -45,6 +45,9 @@ export interface OrderEvent {
   fromStatus?: OrderStatus
   toStatus?: OrderStatus
   at: string
+  recordedAt?: string
+  effectiveAt?: string
+  timeSource?: 'device' | 'server-fallback'
   comment: string
 }
 
@@ -89,6 +92,8 @@ export interface Order {
   priority: Priority
   status: OrderStatus
   createdAt: string
+  queuedAt?: string
+  queueSequence?: number
   dueAt: string
   startedAt?: string
   completedAt?: string
@@ -126,8 +131,8 @@ export interface CreateOrderRequest {
   photoIds?: string[]
 }
 export interface UpdateOrderRequest { priority?: Priority; assigneeId?: string; dueAt?: string; comment?: string; version?: number }
-export interface TransitionRequest { status: OrderStatus; reason?: string; version?: number }
-export interface CompleteOrderRequest { works: string; faultId: string; materials: MaterialUsage[]; materialsConfirmed?: boolean; comment: string; photoIds: string[]; version?: number }
+export interface TransitionRequest { status: OrderStatus; reason?: string; version?: number; requestId?: string; ownerId?: string; recordedAt?: string }
+export interface CompleteOrderRequest { works: string; faultId: string; materials: MaterialUsage[]; materialsConfirmed?: boolean; comment: string; photoIds: string[]; version?: number; requestId?: string; ownerId?: string; recordedAt?: string }
 export interface ReviewOrderRequest { decision: 'close' | 'rework'; score?: number; comment: string; version?: number }
 export interface UploadResponse { photos: Photo[] }
 export interface AssistantResponse { answer: string }

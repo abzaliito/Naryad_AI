@@ -126,10 +126,25 @@ export function filterOrders(orders: Order[], filters: OrderFilters = {}, catalo
 
 export type WorkerStatus = 'free' | 'busy' | 'queued' | 'off_shift'
 export interface WorkerWorkload { user: User; status: WorkerStatus; label: string; color: string; current?: Order; active: Order[]; queued: Order[]; queueCount: number; overdueCount: number }
+/** Existing queues precede newly queued work. A server sequence preserves FIFO even if its clock changes. */
+export function compareQueuedOrders(a: Order, b: Order): number {
+  const sequence = (order: Order) => Number.isSafeInteger(order.queueSequence) && order.queueSequence! > 0 ? order.queueSequence! : 0
+  const aSequence = sequence(a), bSequence = sequence(b)
+  if (aSequence || bSequence) {
+    if (!aSequence) return -1
+    if (!bSequence) return 1
+    if (aSequence !== bSequence) return aSequence - bSequence
+  }
+  const entered = (order: Order) => {
+    const time = timestamp(order.queuedAt || [...order.events].reverse().find(event => event.toStatus === 'queued')?.at || order.createdAt)
+    return Number.isFinite(time) ? time : 0
+  }
+  return entered(a) - entered(b) || a.id.localeCompare(b.id)
+}
 export function getWorkerWorkload(user: User, orders: Order[], now: DateValue = Date.now()): WorkerWorkload {
   const active = orders.filter(order => order.assigneeId === user.id && ACTIVE_STATUSES.includes(order.status))
   const current = active.find(order => order.status === 'in_progress') || active.find(order => order.status === 'paused')
-  const queued = active.filter(order => order.status === 'queued').sort((a, b) => timestamp(a.createdAt) - timestamp(b.createdAt))
+  const queued = active.filter(order => order.status === 'queued').sort(compareQueuedOrders)
   const occupied = current || active.find(order => order.status === 'accepted' || order.status === 'rework')
   const status: WorkerStatus = !user.onShift ? 'off_shift' : occupied ? 'busy' : queued.length ? 'queued' : 'free'
   const label = !user.onShift ? 'Не на смене' : current ? `${current.status === 'paused' ? 'Приостановлен' : 'В работе'} №${current.number}` : occupied ? `Принят №${occupied.number}` : queued.length ? `В очереди: ${queued.length}` : 'Свободен'

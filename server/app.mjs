@@ -94,7 +94,11 @@ export function createApplication(options = {}) {
   }
   const roles = (...allowed) => (req, res, next) => allowed.includes(req.user.role) ? next() : res.status(403).json({ error: 'Для вашей роли это действие недоступно.' });
   const visible = (order, user) => user.role !== 'worker' || order.assigneeId === user.id;
+  function verifyRequestOwner(req) {
+    if (req.body.ownerId !== undefined && req.body.ownerId !== req.user.id) fail(403, 'Действие сохранено под другой учётной записью. Войдите под его автором.');
+  }
   function orderFor(req, mutate = false) {
+    verifyRequestOwner(req);
     const order = store.get('orders', req.params.id);
     if (!order) fail(404, 'Наряд не найден.');
     if (!visible(order, req.user)) fail(403, 'Доступен только ваш наряд.');
@@ -136,10 +140,21 @@ export function createApplication(options = {}) {
     }
     return record;
   }
-  function event(order, actor, action, comment = '', toStatus) {
+  function executionTime(body, order, minimum = order.createdAt) {
+    const receivedAt = iso();
+    if (body.recordedAt === undefined) return { receivedAt, effectiveAt: receivedAt };
+    const recordedAt = typeof body.recordedAt === 'string' ? body.recordedAt.slice(0, 80) : '[invalid type]';
+    const candidate = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/.test(recordedAt) ? Date.parse(recordedAt) : NaN;
+    const now = Date.parse(receivedAt);
+    const valid = Number.isFinite(candidate) && candidate >= Math.max(Date.parse(order.createdAt), Date.parse(minimum)) && candidate <= now + 300000;
+    // Small positive clock drift is accepted, but cannot move execution into the future.
+    return { receivedAt, recordedAt, effectiveAt: valid ? new Date(Math.min(candidate, now)).toISOString() : receivedAt, timeSource: valid ? 'device' : 'server-fallback' };
+  }
+  function event(order, actor, action, comment = '', toStatus, timing) {
     const fromStatus = order.status;
     order.events ??= [];
-    order.events.push({ id: randomUUID(), actorId: actor?.id ?? 'system', actorName: actor?.name ?? 'НарядAI', action, at: iso(), comment, ...(toStatus ? { fromStatus, toStatus } : {}) });
+    const deviceNote = timing?.timeSource ? `Время устройства: ${timing.recordedAt || '[пусто]'}. ${timing.timeSource === 'device' ? 'Учтено для расчёта исполнения; время получения сервером сохранено отдельно.' : 'Некорректное время устройства: для расчёта принято время сервера.'}` : '';
+    order.events.push({ id: randomUUID(), actorId: actor?.id ?? 'system', actorName: actor?.name ?? 'НарядAI', action, at: timing?.receivedAt ?? iso(), comment: [comment, deviceNote].filter(Boolean).join(' '), ...(toStatus ? { fromStatus, toStatus } : {}), ...(timing?.timeSource ? { recordedAt: timing.recordedAt, effectiveAt: timing.effectiveAt, timeSource: timing.timeSource } : {}) });
     if (toStatus) order.status = toStatus;
   }
   function broadcast() {
@@ -203,7 +218,7 @@ export function createApplication(options = {}) {
       event(order, null, 'Проверка ИИ завершена', assessment.summary, assessment.verdict === 'rework' ? 'rework' : undefined);
       save(order);
       notifyParticipants(order, assessment.verdict === 'rework' ? 'Наряд возвращён на доработку' : 'Отчёт ИИ готов', `№${order.number}: ${assessment.score}/5. ${assessment.summary}`, assessment.verdict === 'rework' ? 'warning' : 'success');
-    })().catch(error => { if (!stopping) console.error('Не удалось завершить проверку наряда:', id, error.message); }).finally(() => reviewJobs.delete(id));
+    })().catch(error => { if (!stopping && error?.code !== 'busy') console.error('Не удалось завершить проверку наряда:', id, error.message); }).finally(() => reviewJobs.delete(id));
     reviewJobs.set(id, job);
     return job;
   }
@@ -328,7 +343,7 @@ export function createApplication(options = {}) {
       const previous = store.get('users', order.assigneeId)?.name ?? order.assigneeId;
       archiveCompletion(order, 'Наряд переназначен');
       order.assigneeId = newAssignee.id; order.brigadeId = newAssignee.brigadeId;
-      delete order.startedAt; delete order.completedAt; delete order.completion; delete order.assessment;
+      delete order.startedAt; delete order.completedAt; delete order.completion; delete order.assessment; delete order.queuedAt; delete order.queueSequence;
       order.photos = (order.photos ?? []).filter(photo => photo.kind === 'before');
       event(order, req.user, 'Наряд переназначен', `Исполнитель: ${previous} → ${newAssignee.name}. ${text(body.comment)}`, 'issued'); changes.push(`Исполнитель: ${previous} → ${newAssignee.name}`);
     }
@@ -338,7 +353,11 @@ export function createApplication(options = {}) {
     res.json(order);
   });
   app.post('/api/orders/:id/transition', roles('worker', 'master'), (req, res) => {
-    const order = orderFor(req, true); const target = req.body.status; const reason = text(req.body.reason);
+    const order = orderFor(req); const target = req.body.status; const reason = text(req.body.reason);
+    const retry = retryRecord(req, 'transition', { status: target, reason, recordedAt: req.body.recordedAt });
+    if (retry?.saved) return res.json(retry.saved.response);
+    if (req.body.version !== undefined && req.body.version !== order.version) fail(409, 'Наряд изменился. Обновите карточку и повторите действие.');
+    const timing = executionTime(req.body, order);
     if (req.user.role === 'master') {
       if (target !== 'cancelled' || TERMINAL.includes(order.status)) fail(403, 'Мастер может отменить действующий наряд; исполнение отмечает сотрудник.');
       if (!reason) fail(400, 'Укажите причину отмены.');
@@ -348,19 +367,31 @@ export function createApplication(options = {}) {
       if (target === 'in_progress') {
         const current = store.list('orders').find(item => item.id !== order.id && item.assigneeId === req.user.id && item.status === 'in_progress');
         if (current) fail(409, `Сначала завершите или приостановите наряд №${current.number}.`);
-        order.startedAt ??= iso(); delete order.completedAt;
+        order.startedAt ??= timing.effectiveAt; delete order.completedAt;
       }
     }
-    event(order, req.user, STATUS_LABELS[target], reason, target); save(order);
+    store.transaction(() => {
+      if (target === 'queued') {
+        order.queuedAt = iso();
+        const maximum = store.list('orders').reduce((value, item) => Number.isSafeInteger(item.queueSequence) ? Math.max(value, item.queueSequence) : value, 0);
+        order.queueSequence = Math.max(store.setting('queueSequence', 0), maximum) + 1;
+        store.setSetting('queueSequence', order.queueSequence);
+      }
+      event(order, req.user, STATUS_LABELS[target], reason, target, timing);
+      order.version = (order.version ?? 0) + 1;
+      store.put('orders', order); saveRetry(retry, order);
+    });
+    broadcast();
     notify(target === 'cancelled' ? order.assigneeId : order.masterId, order, `Наряд №${order.number}: ${STATUS_LABELS[target]}`, reason || order.title, ['rejected', 'paused'].includes(target) ? 'warning' : 'info');
     res.json(order);
   });
   app.post('/api/orders/:id/complete', roles('worker'), (req, res) => {
     const order = orderFor(req); const body = req.body;
-    const retry = retryRecord(req, 'complete', { works: body.works, faultId: body.faultId, materials: body.materials, materialsConfirmed: body.materialsConfirmed, comment: body.comment, photoIds: body.photoIds });
+    const retry = retryRecord(req, 'complete', { works: body.works, faultId: body.faultId, materials: body.materials, materialsConfirmed: body.materialsConfirmed, comment: body.comment, photoIds: body.photoIds, recordedAt: body.recordedAt });
     if (retry?.saved) return res.json(retry.saved.response);
     if (body.version !== undefined && body.version !== order.version) fail(409, 'Наряд изменился. Обновите карточку и повторите действие.');
     if (order.status !== 'in_progress') fail(409, 'Отметить исполнение можно только для наряда в работе.');
+    const timing = executionTime(body, order, order.startedAt || order.createdAt);
     if (body.faultId) catalog('faults', body.faultId, 'Шифр неисправности');
     if (!Array.isArray(body.materials ?? []) || (body.materials?.length ?? 0) > 40) fail(400, 'Некорректный список материалов.');
     if (body.materialsConfirmed !== undefined && typeof body.materialsConfirmed !== 'boolean') fail(400, 'Подтверждение расхода материалов должно быть логическим значением.');
@@ -370,8 +401,8 @@ export function createApplication(options = {}) {
     archiveCompletion(order, 'Повторное исполнение');
     order.photos = [...(order.photos ?? []).filter(item => item.kind === 'before'), ...photos];
     order.completion = { works: text(body.works), faultId: body.faultId || '', materials, materialsConfirmed: body.materialsConfirmed ?? Array.isArray(body.materials), comment: text(body.comment), submittedAt: iso() };
-    order.completedAt = iso(); delete order.assessment;
-    event(order, req.user, 'Исполнение отмечено', order.completion.comment, 'completed');
+    order.completedAt = timing.effectiveAt; delete order.assessment;
+    event(order, req.user, 'Исполнение отмечено', order.completion.comment, 'completed', timing);
     event(order, null, 'Отправлен на обязательную проверку ИИ', '', 'ai_review');
     store.transaction(() => { bindPhotos(photos); order.version++; store.put('orders', order); saveRetry(retry, order); }); broadcast();
     notify(order.masterId, order, 'Наряд исполнен', `№${order.number} передан на проверку ИИ.`, 'info');
@@ -396,8 +427,9 @@ export function createApplication(options = {}) {
     res.json(order);
   });
 
-  const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024, files: 5, fields: 4 }, fileFilter: (req, file, callback) => callback(null, ['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype)) });
+  const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024, files: 5, fields: 5 }, fileFilter: (req, file, callback) => callback(null, ['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype)) });
   app.post('/api/uploads', roles('master', 'worker'), upload.array('photos', 5), async (req, res) => {
+    verifyRequestOwner(req);
     const { kind, orderId } = req.body;
     if (!['before', 'after'].includes(kind) || !req.files?.length) fail(400, 'Прикрепите JPEG, PNG или WebP и укажите тип фото.');
     if (orderId !== undefined && typeof orderId !== 'string') fail(400, 'Некорректный идентификатор наряда.');

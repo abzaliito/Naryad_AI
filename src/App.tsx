@@ -2,7 +2,7 @@ import { t, useLocale, getLocale, actionLabel, criticalityLabel } from './i18n';
 import { LanguageSwitch } from './LanguageSwitch';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
-import { Activity, ArrowDownLeft, ArrowRight, ArrowUpRight, Bell, BookOpen, Check, CheckCheck, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, ClipboardList, Clock3, Download, Factory, FileCheck2, Gauge, LayoutDashboard, LayoutGrid, List, Loader2, LogOut, Menu, MessageSquare, Mic, MoreHorizontal, Plus, Search, Send, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Trophy, Upload, Users, WifiOff, Wrench, X, Zap } from 'lucide-react';
+import { Activity, ArrowDownLeft, ArrowRight, ArrowUpRight, Bell, BookOpen, Check, CheckCheck, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, ClipboardList, Clock3, Download, Factory, FileCheck2, Gauge, LayoutDashboard, LayoutGrid, List, Loader2, LogOut, Menu, MessageSquare, Mic, MoreHorizontal, Plus, Search, Send, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Trophy, Users, WifiOff, Wrench, X, Zap } from 'lucide-react';
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis, BarChart, Bar, Cell } from 'recharts';
 import { api, ApiError, cacheSnapshot, compressImage, enablePush, readSnapshot } from './api';
 import type { BootstrapResponse as Bootstrap, Order, User, Photo, OrderStatus as Status } from './types';
@@ -15,6 +15,9 @@ import { EquipmentQR } from './EquipmentQR';
 import { ManagementOverview } from './ManagementOverview';
 import { recommendWorkers, suggestFault } from './recommendations';
 import { dashboardTrend } from './dashboardTrend';
+import { listTransitions, projectTransitions, queueTransition } from './offlineTransitions';
+import { compareQueuedOrders } from './domain';
+import { PhotoInput } from './PhotoInput';
 
 type Page = 'dashboard' | 'orders' | 'team' | 'equipment' | 'analytics' | 'assistant' | 'journal' | 'settings';
 type Toast = { text: string; error?: boolean };
@@ -71,13 +74,20 @@ function Modal({ children, title, onClose, wide = false }: { children: ReactNode
 
 export default function App() {
   useLocale();
-  const [data, setData] = useState<Bootstrap | null>(null), [loading, setLoading] = useState(true), [page, setPage] = useState<Page>(new URLSearchParams(location.search).has('equipment') ? 'equipment' : 'dashboard');
+  const [serverData, setData] = useState<Bootstrap | null>(null), [loading, setLoading] = useState(true), [page, setPage] = useState<Page>(new URLSearchParams(location.search).has('equipment') ? 'equipment' : 'dashboard');
+  const [outboxRevision, setOutboxRevision] = useState(0);
+  const [localReports, setLocalReports] = useState<{ownerId: string; orderIds: string[]}>({ ownerId: '', orderIds: [] });
+  const data = useMemo(() => {
+    if (!serverData) return null;
+    let projected = serverData;
+    try { projected = projectTransitions(serverData); } catch { /* The outbox displays the storage error. */ }
+    if (localReports.ownerId !== projected.user.id || !localReports.orderIds.length) return projected;
+    return { ...projected, orders: projected.orders.map(order => localReports.orderIds.includes(order.id) && order.status === 'in_progress' ? { ...order, status: 'completed' as const } : order) };
+  }, [serverData, outboxRevision, localReports]);
   const [toast, setToast] = useState<Toast | null>(null), [create, setCreate] = useState(false), [selected, setSelected] = useState<string | null>(new URLSearchParams(location.search).get('order'));
   const [notifications, setNotifications] = useState(false), [menu, setMenu] = useState(false), [online, setOnline] = useState(navigator.onLine);
   const [search, setSearch] = useState(''), [site, setSite] = useState(''), [equipment, setEquipment] = useState(new URLSearchParams(location.search).get('equipment') || ''), [assignee, setAssignee] = useState(''), [priority, setPriority] = useState('');
   const [tick, setTick] = useState(0);
-  const [pendingCount, setPendingCount] = useState(0), [syncConflict, setSyncConflict] = useState(false);
-  const syncing = useRef(false);
   const authGeneration = useRef(0), loggingOut = useRef(false);
   const notify = useCallback((text: string, error = false) => setToast({ text, error }), []);
   const refresh = useCallback(async () => {
@@ -87,9 +97,12 @@ export default function App() {
     catch(e) { if(e instanceof ApiError&&e.status===401&&generation===authGeneration.current){setData(null);localStorage.removeItem('naryad-snapshot');} throw e; }
   }, []);
   useEffect(() => { refresh().catch(() => { if (!navigator.onLine) setData(readSnapshot()); }).finally(() => setLoading(false)); }, [refresh]);
+  useEffect(() => { if (online && serverData?.user.id) void refresh().catch(() => undefined); }, [online, serverData?.user.id, refresh]);
   useEffect(() => { if (toast) { const t = setTimeout(() => setToast(null), 6500); return () => clearTimeout(t); } }, [toast]);
   useEffect(() => { const t = setInterval(() => setTick(v => v + 1), 15000); return () => clearInterval(t); }, []);
   useEffect(() => { const h = () => setOnline(navigator.onLine); window.addEventListener('online', h); window.addEventListener('offline', h); return () => { window.removeEventListener('online', h); window.removeEventListener('offline', h); }; }, []);
+  useEffect(() => { const changed = () => setOutboxRevision(value => value + 1); window.addEventListener('naryad-outbox-change', changed); window.addEventListener('storage', changed); return () => { window.removeEventListener('naryad-outbox-change', changed); window.removeEventListener('storage', changed); }; }, []);
+  useEffect(() => { const ownerId = serverData?.user.id; let active = true; if (ownerId) void listQueued(ownerId).then(items => { if (active) setLocalReports({ ownerId, orderIds: items.filter(item => item.status === 'queued').map(item => item.orderId) }); }).catch(() => undefined); return () => { active = false; }; }, [serverData?.user.id, outboxRevision]);
   useEffect(() => {
     if (!menu) return;
     const previousOverflow = document.body.style.overflow;
@@ -116,31 +129,26 @@ export default function App() {
     const poll = setInterval(() => { if (!streamOpen) reload(); }, 4500);
     return () => { events.close(); clearTimeout(timer); clearInterval(poll); };
   }, [data?.user.id, online, refresh]);
-  useEffect(() => {
-    if (!data?.user.id) return;
-    const key = `naryad-pending-${data.user.id}`;
-    let pending: {path: string; body: unknown}[];
-    try { pending = JSON.parse(localStorage.getItem(key) || '[]'); if (!Array.isArray(pending)) throw new Error(); }
-    catch { setSyncConflict(true); notify('Не удалось прочитать локальную очередь. Проверьте наряды перед очисткой.',true); return; }
-    setPendingCount(pending.length);
-    if (!online || !pending.length || syncing.current) return;
-    syncing.current = true; setSyncConflict(false);
-    (async () => {
-      try {
-        while (pending.length) {
-          await api(pending[0].path,pending[0].body);
-          pending = pending.slice(1); localStorage.setItem(key,JSON.stringify(pending)); setPendingCount(pending.length);
-        }
-        await refresh(); notify('Действия синхронизированы');
-      } catch (e) { setSyncConflict(true); notify(t("Сохранённое действие требует проверки: {v0}", { v0: (e as Error).message }),true); await refresh().catch(()=>undefined); }
-      finally { syncing.current = false; }
-    })();
-  }, [online, data?.user.id, notify, refresh]);
   async function mutate(path: string, body: unknown, method = 'POST') {
-    if (!online && path.endsWith('/transition') && data) { const key = `naryad-pending-${data.user.id}`; let pending: {path:string;body:unknown}[] = []; try { pending = JSON.parse(localStorage.getItem(key) || '[]'); } catch { throw new Error('Локальная очередь повреждена. Проверьте сохранённые действия.'); } if(pending.some(item=>item.path===path)) throw new Error('Для этого наряда уже сохранено действие. Дождитесь синхронизации.'); pending.push({ path, body }); localStorage.setItem(key, JSON.stringify(pending)); setPendingCount(pending.length); notify('Действие сохранено на устройстве. Отправим при появлении сети.'); return; }
+    const transitionPath = /^\/orders\/([^/]+)\/transition$/.exec(path);
+    if (transitionPath && data) {
+      const order = data.orders.find(value => value.id === decodeURIComponent(transitionPath[1]));
+      const change = body as { status: Status; reason?: string; version: number };
+      if (!order || order.version !== change.version) throw new Error('Обновите карточку наряда перед изменением.');
+      if ((await listQueued(data.user.id)).some(item => item.orderId === order.id)) throw new Error('Отчёт уже ожидает отправки. Сначала отправьте его или верните в черновик через очередь.');
+      await queueTransition(data.user.id, order, change.status, change.reason);
+      if (navigator.onLine) {
+        await syncQueuedReports(data.user.id);
+        await refresh().catch(() => undefined);
+        const pending = listTransitions(data.user.id).find(value => value.orderId === order.id);
+        if (pending?.status === 'conflict') throw new Error(pending.error || 'Сверьте сохранённые действия с текущим нарядом.');
+        if (pending) throw new Error('Сервер недоступен. Действие сохранено на устройстве и ожидает отправки.');
+      } else notify('Действие сохранено на устройстве. Отправим при появлении сети.');
+      return;
+    }
     await api(path, body, method); await refresh();
   }
-  async function logout() { loggingOut.current=true; authGeneration.current++; try { await api('/auth/logout', {}); localStorage.removeItem('naryad-snapshot'); setData(null); setPage('dashboard'); setSelected(null); setPendingCount(0); setNotifications(false); setMenu(false); } catch { notify('Для безопасного выхода подключитесь к сети и повторите.',true); } finally {loggingOut.current=false;authGeneration.current++;} }
+  async function logout() { loggingOut.current=true; authGeneration.current++; try { await api('/auth/logout', {}); localStorage.removeItem('naryad-snapshot'); setData(null); setPage('dashboard'); setSelected(null); setNotifications(false); setMenu(false); } catch { notify('Для безопасного выхода подключитесь к сети и повторите.',true); } finally {loggingOut.current=false;authGeneration.current++;} }
   const open = useCallback((id: string) => setSelected(id), []), closeOrder = useCallback(() => setSelected(null), []), closeCreate = useCallback(() => setCreate(false), []);
   const c = data?.catalogs;
   const filtered = useMemo(() => (data?.orders || []).filter(o => (!site || o.siteId === site) && (!equipment || o.equipmentId === equipment) && (!assignee || o.assigneeId === assignee) && (!priority || o.priority === priority) && (!search || `${o.number} ${o.title} ${o.description} ${c?.equipment.find(e => e.id === o.equipmentId)?.name}`.toLowerCase().includes(search.toLowerCase()))), [data?.orders, site, equipment, assignee, priority, search, c]);
@@ -163,7 +171,6 @@ export default function App() {
     <aside className={`sidebar ${menu ? 'mobile-open' : ''}`}><Brand light /><nav id="primary-navigation">{nav.map(n => <button key={n.id} className={`nav-item ${page === n.id ? 'active' : ''}`} onClick={() => { setPage(n.id); setMenu(false); }}><n.icon size={19} /><span>{t(n.name)}</span>{n.count !== undefined && <b>{n.count}</b>}{n.id === 'assistant' && <span className="tiny-ai">AI</span>}</button>)}</nav><div className="sidebar-bottom"><LanguageSwitch/><button className="user-profile" onClick={logout} title={t("Выйти из аккаунта")}><Avatar user={user} /><span>{shortName(user.name)}<small>{t(roles[user.role])}</small></span><LogOut size={17} /></button></div></aside>
     <div className="workspace"><header className="topbar"><div className="mobile-brand mobile-only"><Brand /></div><div className="breadcrumb"><span className="desktop-only">{t("Рабочее пространство")}</span><ChevronRight size={13} className="desktop-only" /><strong>{t(current)}</strong></div><div className="topbar-right"><button className="notification-button icon-button" aria-label={t("Уведомления")} onClick={() => { setMenu(false); setNotifications(!notifications); }}><Bell size={19} />{unread > 0 && <i />}</button><Avatar user={user} size="small" /><button className="icon-button mobile-menu-toggle mobile-only" aria-label={menu ? t("Закрыть меню") : t("Открыть меню")} aria-expanded={menu} aria-controls="primary-navigation" onClick={() => { setMenu(!menu); setNotifications(false); }}>{menu ? <X size={22} /> : <Menu size={22} />}</button></div></header>
     {!online && <div className="offline-banner"><WifiOff size={17} />{t("Вы без сети. Показаны последние данные; изменения статусов, отчёты и фото сохраняются на устройстве.")}</div>}
-    {(pendingCount>0||syncConflict)&&<div className="offline-banner"><Clock3 size={17}/><span>{syncConflict?t('Сохранённые действия требуют сверки с текущими статусами.'):t("Ожидают отправки: {v0}.", { v0: pendingCount })}</span>{syncConflict&&<button className="text-button" onClick={()=>{localStorage.removeItem(`naryad-pending-${user.id}`);setPendingCount(0);setSyncConflict(false);notify('Локальная очередь очищена. Повторите нужные действия по актуальным нарядам.');}}>{t("Очистить локальную очередь")}</button>}</div>}
     <OfflineReportQueue key={user.id} ownerId={user.id} online={online} orders={data.orders} refresh={refresh} open={open} notify={notify}/>
     <main className="main-content"><div className="page-heading"><div><h1>{page === 'dashboard' ? user.role === 'worker' ? t('Ваша смена — под контролем') : t('Всё о смене. В одном месте.') : t(current)}</h1><p>{({dashboard:t('Наряды, команда и оборудование — держите руку на пульсе производства.'),orders:t('От выдачи до приёмки. Каждый этап прозрачен.'),team:t('Люди, на которых держится производство.'),equipment:t('Состояние оборудования и полная история ремонтов.'),analytics:t('Данные, которые помогают принимать решения.'),assistant:t('Задайте вопрос о нарядах, загрузке и работе участка.'),journal:t('Кто, что и когда изменил. Полная история действий в системе.'),settings:t('Справочники, уведомления и параметры контроля.')} as Record<Page,string>)[page]}</p></div><div className="heading-actions">{page !== 'assistant' && <button className="button secondary" onClick={() => { setPage('analytics'); }}><Download size={16} />{t("Отчёт")}</button>}{master && <button className="button primary" onClick={() => setCreate(true)}><Plus size={18} />{t("Выдать наряд")}</button>}</div></div>
     {['dashboard','orders','equipment'].includes(page) && <div className="filterbar"><div className="filter-left"><SlidersHorizontal size={16} /><select aria-label={t("Участок")} value={site} onChange={e => { setSite(e.target.value); setEquipment(''); }}><option value="">{t("Все участки")}</option>{c.sites.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select><select aria-label={t("Оборудование")} value={equipment} onChange={e => setEquipment(e.target.value)}><option value="">{t("Всё оборудование")}</option>{c.equipment.filter(e => !site || e.siteId === site).map(e => <option key={e.id} value={e.id}>{e.name}</option>)}</select>{page === 'orders' && <><select aria-label={t("Исполнитель")} value={assignee} onChange={e => setAssignee(e.target.value)}><option value="">{t("Все исполнители")}</option>{c.users.filter(u => u.role === 'worker').map(u => <option key={u.id} value={u.id}>{u.name}</option>)}</select><select aria-label={t("Приоритет")} value={priority} onChange={e => setPriority(e.target.value)}><option value="">{t("Все приоритеты")}</option>{Object.entries(priorities).map(([k,v]) => <option key={k} value={k}>{t(v)}</option>)}</select></>}</div><label className="search"><Search size={16} /><input placeholder={t("Найти наряд или оборудование…")} value={search} onChange={e => setSearch(e.target.value)} /></label></div>}
@@ -208,7 +215,7 @@ function Dashboard({ data, orders, open, go }: { data: Bootstrap; orders: Order[
 }
 
 function WorkerDashboard({data,orders,open,go}:{data:Bootstrap;orders:Order[];open:(id:string)=>void;go:(page:Page)=>void}) {
-  const active=orders.filter(alive).sort((a,b)=>Number(b.status==='in_progress')-Number(a.status==='in_progress')||Number(b.priority==='emergency')-Number(a.priority==='emergency')||+new Date(a.dueAt)-+new Date(b.dueAt));
+  const active=orders.filter(alive).sort((a,b)=>a.status==='queued'&&b.status==='queued'?compareQueuedOrders(a,b):Number(b.status==='in_progress')-Number(a.status==='in_progress')||Number(a.status==='queued')-Number(b.status==='queued')||Number(b.priority==='emergency')-Number(a.priority==='emergency')||+new Date(a.dueAt)-+new Date(b.dueAt));
   const pending=active.filter(o=>o.status==='issued'),review=active.filter(o=>o.status==='ai_review');
   const closed=orders.filter(o=>o.status==='closed'&&o.assessment).sort((a,b)=>+new Date(b.closedAt||b.createdAt)-+new Date(a.closedAt||a.createdAt));
   return <><div className="worker-intro panel"><Avatar user={data.user} size="large"/><div><h2>{data.user.name}</h2><p>{data.user.specialty} · {data.user.grade} {t("разряд")}</p></div><button className="button secondary" onClick={()=>go('analytics')}><Trophy size={17}/>{t("Мои оценки")}</button></div><div className="worker-metrics"><div><strong>{active.length}</strong><span>{t("активных нарядов")}</span></div><div><strong>{pending.length}</strong><span>{t("ждут вашего ответа")}</span></div><div><strong>{review.length}</strong><span>{t("на проверке")}</span></div></div><div className="worker-orders">{active.map(o=><section className={`panel worker-order ${o.priority==='emergency'?'urgent-order':''}`} key={o.id}><div className="worker-order-heading"><span>{t("Наряд №")}{o.number}</span><Badge priority={o.priority}/></div><h3>{o.title||o.description}</h3><p><Factory size={15}/>{data.catalogs.equipment.find(q=>q.id===o.equipmentId)?.name}</p><div className="worker-order-meta"><Badge status={o.status}/><span className={overdue(o)?'overdue-text':''}><Clock3 size={15}/>{date(o.dueAt,true)}</span></div>{o.status==='rework'&&o.assessment&&<div className="warning-banner">{o.assessment.summary}</div>}{o.priority==='emergency'&&o.status==='issued'&&<div className="warning-banner"><Zap size={17}/>{t("Аварийный наряд требует вашего ответа.")}</div>}<button className={`button ${['in_progress','issued','rework'].includes(o.status)?'primary':'secondary'} full`} onClick={()=>open(o.id)}>{o.status==='in_progress'?t('Открыть текущую работу'):o.status==='issued'?t('Ознакомиться и ответить'):o.status==='rework'?t('Посмотреть замечания'):o.status==='ai_review'?t('Результаты проверки'):t('Открыть наряд')}<ArrowRight size={16}/></button></section>)}</div>{!active.length&&<section className="panel"><Empty text={t("Активных нарядов нет")} sub={t("Новое задание появится здесь. Включите уведомления, чтобы его не пропустить.")}/></section>}{closed.length>0&&<section className="panel recent-results"><div className="panel-heading"><h2>{t("Последние результаты")}</h2><button className="text-button" onClick={()=>go('analytics')}>{t("Все оценки")}<ArrowRight size={14}/></button></div>{closed.slice(0,3).map(o=><button key={o.id} onClick={()=>open(o.id)}><span><strong>{o.title}</strong><small>№{o.number} · {date(o.closedAt||o.createdAt)}</small></span><b>{o.assessment?.masterScore??o.assessment?.score}<small>/ 5</small></b><ChevronRight size={17}/></button>)}</section>}</>;
@@ -232,11 +239,6 @@ function VoiceButton({onText,notify}:{onText:(text:string)=>void;notify:Notify})
 }
 interface SpeechRecognizer {lang:string;interimResults:boolean;onresult:(e:{results:{[key:number]:{[key:number]:{transcript:string}}}})=>void;onerror:()=>void;onend:()=>void;start:()=>void}
 
-function PhotoInput({files,setFiles,kind}:{files:File[];setFiles:(files:File[])=>void;kind:string}) {
-  const previews=useMemo(()=>files.map(f=>URL.createObjectURL(f)),[files]);
-  useEffect(()=>()=>previews.forEach(URL.revokeObjectURL),[previews]);
-  return <div><label className="upload-zone"><Upload size={22}/><strong>{t("Добавить фото")} {t(kind)}</strong><span>{t("Камера или галерея · до 5 фото · сжатие автоматически")}</span><input type="file" accept="image/*" multiple onChange={e=>{setFiles([...files,...Array.from(e.target.files||[])].slice(0,5));e.target.value='';}}/></label>{files.length>0&&<div className="photo-previews">{previews.map((url,i)=><div key={url}><img src={url} alt={t("Фото {v0}", { v0: i+1 })}/><button type="button" aria-label={t("Удалить фото {v0}", { v0: i+1 })} onClick={()=>setFiles(files.filter((_,j)=>i!==j))}><X size={13}/></button></div>)}</div>}</div>;
-}
 async function uploadPhotos(files:File[],kind:string,orderId?:string) {
   if(!files.length)return [] as Photo[];
   const uploaded=await Promise.all(files.map(async file=>{const form=new FormData();form.append('photos',await compressImage(file));form.append('kind',kind);form.append('capturedAt',new Date(file.lastModified).toISOString());if(orderId)form.append('orderId',orderId);return (await api<{photos:Photo[]}>('/uploads',form)).photos;}));

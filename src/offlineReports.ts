@@ -1,5 +1,7 @@
 import { api, ApiError, compressImage } from './api';
-import type { MaterialUsage, Photo } from './types';
+import type { MaterialUsage, Order, Photo } from './types';
+import { listTransitions, outboxChanged, rememberConfirmedOrder, replayTransitions, withOutboxLock } from './offlineTransitions';
+import type { QueuedTransition } from './offlineTransitions';
 
 export interface OfflinePhoto { blob: Blob; name: string; capturedAt: string; lastModified: number }
 export interface ReportDraft {
@@ -8,10 +10,11 @@ export interface ReportDraft {
 }
 export interface QueuedReport {
   key: string; ownerId: string; orderId: string; requestId: string; queuedAt: string
+  recordedAt?: string
   draft: ReportDraft; uploadedPhotoIds: string[]; status: 'queued' | 'conflict'; error?: string
 }
 export interface ReportSyncUpdate { kind: 'sent' | 'conflict' | 'pending' | 'auth'; orderId: string; message?: string }
-export interface ReportSyncResult { sent: number; blocked: number; pending: number }
+export interface ReportSyncResult { sent: number; blocked: number; pending: number; transitionsSent?: number; transitionsBlocked?: number }
 interface StoredDraft { key: string; ownerId: string; orderId: string; updatedAt: string; draft: ReportDraft }
 
 const DB_NAME = 'naryad-offline-reports';
@@ -111,7 +114,8 @@ export async function queueReport(ownerId: string, orderId: string, draft: Repor
     let value: QueuedReport, duplicate = false;
     request.onsuccess = () => {
       if (request.result) { duplicate = true; transaction.abort(); return; }
-      value = { key, ownerId, orderId, requestId: requestId(), queuedAt: new Date().toISOString(), draft, uploadedPhotoIds: [], status: 'queued' };
+      const queuedAt = new Date().toISOString();
+      value = { key, ownerId, orderId, requestId: requestId(), queuedAt, recordedAt: queuedAt, draft, uploadedPhotoIds: [], status: 'queued' };
       reports.put(value);
       transaction.objectStore('drafts').put({ key, ownerId, orderId, updatedAt: value.queuedAt, draft } satisfies StoredDraft);
     };
@@ -133,7 +137,7 @@ export async function listQueued(ownerId: string): Promise<QueuedReport[]> {
 
 /** An explicit user decision after a version conflict; the editable draft and photos are retained. */
 export async function discardQueuedReport(ownerId: string, orderId: string): Promise<void> {
-  await removeRecord('reports', ownerId, orderId);
+  await withOutboxLock(ownerId, () => removeRecord('reports', ownerId, orderId));
 }
 
 async function finishReport(item: QueuedReport): Promise<void> {
@@ -153,13 +157,26 @@ async function finishReport(item: QueuedReport): Promise<void> {
   });
 }
 
-async function synchronize(ownerId: string, onUpdate?: (update: ReportSyncUpdate) => void): Promise<ReportSyncResult> {
+const precedesTransition = (report: QueuedReport, transition: QueuedTransition) => report.queuedAt <= transition.queuedAt && !(report.orderId === transition.orderId && report.draft.version > transition.body.version);
+
+async function synchronize(ownerId: string, onUpdate?: (update: ReportSyncUpdate) => void, before?: QueuedTransition): Promise<ReportSyncResult> {
   const queued = await listQueued(ownerId);
   let sent = 0;
   const emit = (update: ReportSyncUpdate) => { try { onUpdate?.(update); } catch { /* UI failures must not replay a sent report. */ } };
   for (const item of queued) {
     if (!navigator.onLine) break;
+    if (before && !precedesTransition(item, before)) continue;
     if (item.status === 'conflict') continue;
+    const dependencies = listTransitions(ownerId).filter(value => value.orderId === item.orderId);
+    if (dependencies.length) {
+      if (dependencies.some(value => value.status === 'conflict')) {
+        item.status = 'conflict'; item.error = 'Сначала сверьте сохранённые изменения статуса. Отчёт и фотографии сохранены.';
+        await writeRecord('reports', item);
+        outboxChanged();
+        emit({ kind: 'conflict', orderId: item.orderId, message: item.error });
+      }
+      continue;
+    }
     try {
       const session = await api<{ user: { id: string } }>('/auth/me');
       if (session.user.id !== ownerId) { emit({ kind: 'auth', orderId: item.orderId, message: 'Отчёт сохранён для другого аккаунта. Войдите под его автором.' }); break; }
@@ -169,6 +186,7 @@ async function synchronize(ownerId: string, onUpdate?: (update: ReportSyncUpdate
         form.append('kind', 'after'); form.append('orderId', item.orderId);
         form.append('capturedAt', photo.capturedAt);
         form.append('requestId', `${item.requestId}:${index}`);
+        form.append('ownerId', ownerId);
         const response = await api<{ photos: Photo[] }>('/uploads', form);
         if (response.photos.length !== 1 || !response.photos[0].id) throw new Error('Сервер не подтвердил загрузку фотографии.');
         item.uploadedPhotoIds.push(response.photos[0].id);
@@ -177,17 +195,24 @@ async function synchronize(ownerId: string, onUpdate?: (update: ReportSyncUpdate
         await writeRecord('reports', item);
       }
       const { photos: _photos, ...report } = item.draft;
-      await api(`/orders/${encodeURIComponent(item.orderId)}/complete`, { ...report, requestId: item.requestId, photoIds: item.uploadedPhotoIds });
+      const completed = await api<Order>(`/orders/${encodeURIComponent(item.orderId)}/complete`, { ...report, ownerId, requestId: item.requestId, photoIds: item.uploadedPhotoIds, ...(item.recordedAt ? { recordedAt: item.recordedAt } : {}) });
+      rememberConfirmedOrder(ownerId, completed);
       await finishReport(item);
+      outboxChanged();
       sent += 1;
       emit({ kind: 'sent', orderId: item.orderId });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Не удалось отправить отчёт.';
       if (error instanceof ApiError && error.status === 401) { emit({ kind: 'auth', orderId: item.orderId, message: 'Войдите в систему, чтобы отправить сохранённый отчёт.' }); break; }
+      if (error instanceof ApiError && error.status === 403) {
+        const session = await api<{ user: { id: string } }>('/auth/me').catch(() => null);
+        if (!session || session.user.id !== ownerId) { emit({ kind: 'auth', orderId: item.orderId, message: 'Отчёт сохранён для другого аккаунта. Войдите под его автором.' }); break; }
+      }
       item.error = message;
       if (error instanceof ApiError && error.status >= 400 && error.status < 500 && error.status !== 408 && error.status !== 429) {
         item.status = 'conflict';
         await writeRecord('reports', item);
+        outboxChanged();
         emit({ kind: 'conflict', orderId: item.orderId, message });
       } else {
         await writeRecord('reports', item);
@@ -204,9 +229,19 @@ async function synchronize(ownerId: string, onUpdate?: (update: ReportSyncUpdate
 export function syncQueuedReports(ownerId: string, onUpdate?: (update: ReportSyncUpdate) => void): Promise<ReportSyncResult> {
   const running = syncs.get(ownerId);
   if (running) return running;
-  const job = (async () => navigator.locks
-    ? await navigator.locks.request(`naryad-report-sync:${ownerId}`, () => synchronize(ownerId, onUpdate))
-    : await synchronize(ownerId, onUpdate))().finally(() => syncs.delete(ownerId));
+  const job = withOutboxLock(ownerId, async () => {
+    let completed = 0;
+    const transitions = await replayTransitions(ownerId, async transition => {
+      const checkpoint = await synchronize(ownerId, onUpdate, transition);
+      completed += checkpoint.sent;
+      // Finishing A releases the worker before starting B. Never skip an earlier
+      // report after a network error or a conflict requiring the user's decision.
+      return !(await listQueued(ownerId)).some(item => precedesTransition(item, transition));
+    });
+    if (transitions.auth) return { sent: completed, blocked: 0, pending: (await listQueued(ownerId)).length, transitionsSent: transitions.sent, transitionsBlocked: transitions.blocked };
+    const result = await synchronize(ownerId, onUpdate);
+    return { ...result, sent: completed + result.sent, transitionsSent: transitions.sent, transitionsBlocked: transitions.blocked };
+  }).finally(() => syncs.delete(ownerId));
   syncs.set(ownerId, job);
   return job;
 }
