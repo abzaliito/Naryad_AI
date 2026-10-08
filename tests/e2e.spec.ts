@@ -75,6 +75,10 @@ test('мастер видит рабочую смену, учебный архи
   const response = await page.request.get('/api/bootstrap');
   const data = await response.json();
   expect(data.orders.length).toBeGreaterThanOrEqual(600);
+  const activeCount = data.orders.filter((order: Order) => !['closed', 'cancelled'].includes(order.status)).length;
+  const reviewingCount = data.orders.filter((order: Order) => order.status === 'ai_review').length;
+  expect(await page.locator('.stat-card').nth(0).locator('.stat-value').evaluate(element => Number(element.firstChild?.textContent?.trim()))).toBe(activeCount);
+  expect(await page.locator('.stat-card').nth(1).locator('.stat-value').evaluate(element => Number(element.firstChild?.textContent?.trim()))).toBe(reviewingCount);
   expect(data.catalogs.equipment.length).toBeGreaterThanOrEqual(25);
   expect(data.catalogs.users.filter((user: { role: string }) => user.role === 'worker')).toHaveLength(15);
   expect(data.settings.aiProvider).toBe('demo-rules');
@@ -82,12 +86,16 @@ test('мастер видит рабочую смену, учебный архи
 
   await page.getByRole('button', { name: 'Уведомления', exact: true }).click();
   await expect(page.locator('.notification-panel')).toBeVisible();
+  const beforeRead = await (await page.request.get('/api/bootstrap')).json();
+  const notificationIds = new Set(beforeRead.notifications.map((item: { id: string }) => item.id));
   const marked = page.waitForResponse(response => response.url().endsWith('/api/notifications/read') && response.request().method() === 'POST');
   await page.getByRole('button', { name: 'Прочитать все' }).click();
   expect((await marked).ok()).toBeTruthy();
   await expect.poll(async () => {
     const data = await (await page.request.get('/api/bootstrap')).json();
-    return data.notifications.filter((item: { read: boolean }) => !item.read).length;
+    // The live deadline monitor may deliver a new message after the read operation.
+    // Every message that already existed must be read; new arrivals remain unread.
+    return data.notifications.filter((item: { id: string; read: boolean }) => notificationIds.has(item.id) && !item.read).length;
   }).toBe(0);
   await page.getByRole('button', { name: 'Закрыть уведомления' }).click();
   expect(pageErrors).toEqual([]);

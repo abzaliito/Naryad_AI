@@ -7,11 +7,16 @@ import { mkdirSync, existsSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { randomBytes, randomUUID, createHash } from 'node:crypto';
 import { openStore, verifyPin, hashPin } from './db.mjs';
-import { assessOrder, aiProvider } from './ai.mjs';
-import { calculateRatings, calculateBrigadeRatings, filterOrders, getEquipmentStats, getWorkerWorkload, getPeriodRange, buildShiftSummary, formatDate } from '../src/domain.ts';
+import { assessOrder, aiProvider, answerAssistant } from './ai.mjs';
+import { buildAuditLog, catalogAuditDetails } from './audit.mjs';
+import { deliverWeeklySummary } from './weekly-summary.mjs';
+import { buildScopedAnomalyAnswer, buildScopedSummaryAnswer, parseAssistantScope } from './assistant-scope.mjs';
+import { photoSignature } from './photo-evidence.mjs';
+import { calculateRatings, calculateBrigadeRatings, filterOrders, getEquipmentStats, getWorkerWorkload } from '../src/domain.ts';
 
 const CATALOGS = ['sites', 'equipment', 'brigades', 'faults', 'materials', 'users'];
 const PRIORITIES = ['emergency', 'high', 'normal', 'planned'];
+const PRIORITY_LABELS = { emergency: 'Аварийный', high: 'Высокий', normal: 'Обычный', planned: 'Плановый' };
 const ROLES = ['master', 'worker', 'manager', 'admin'];
 const TERMINAL = ['closed', 'cancelled'];
 const WORKER_TRANSITIONS = { issued: ['accepted', 'queued', 'rejected'], queued: ['accepted', 'rejected'], accepted: ['in_progress'], in_progress: ['paused'], paused: ['in_progress'], rework: ['in_progress'] };
@@ -32,6 +37,7 @@ export function createApplication(options = {}) {
   const app = express();
   const clients = new Set();
   const reviewJobs = new Map();
+  const pendingUploads = new Map();
   const loginAttempts = new Map();
   let stopping = false;
   const cookieName = 'naryad_session';
@@ -169,6 +175,16 @@ export function createApplication(options = {}) {
     });
   }
   function bindPhotos(photos) { for (const photo of photos) store.put('photos', photo); }
+  function retryRecord(req, kind, fingerprint) {
+    if (req.body.requestId === undefined) return null;
+    if (typeof req.body.requestId !== 'string' || !/^[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}(?::\d{1,2})?$/i.test(req.body.requestId)) fail(400, 'Некорректный идентификатор повторного запроса.');
+    const id = sha(`${kind}:${req.user.id}:${req.params.id ?? req.body.orderId ?? 'new'}:${req.body.requestId}`);
+    const bodyHash = sha(JSON.stringify(fingerprint));
+    const saved = store.get('requests', id);
+    if (saved && saved.bodyHash !== bodyHash) fail(409, 'Идентификатор запроса уже использован с другими данными.');
+    return { id, kind, actorId: req.user.id, bodyHash, saved };
+  }
+  function saveRetry(retry, response) { if (retry) store.put('requests', { id: retry.id, kind: retry.kind, actorId: retry.actorId, bodyHash: retry.bodyHash, at: iso(), response }); }
   function archiveCompletion(order, reason) {
     if (!order.completion) return;
     order.completionHistory ??= [];
@@ -248,6 +264,7 @@ export function createApplication(options = {}) {
   });
   app.use('/api', authenticate);
   app.get('/api/auth/me', (req, res) => res.json({ user: req.user }));
+  app.get('/api/audit', (req, res) => res.json(buildAuditLog(store, req.user, req.query, visible)));
   app.post('/api/auth/logout', (req, res) => {
     revokeSession(req.sessionHash);
     res.clearCookie(cookieName, { ...cookieOptions, maxAge: undefined }).json({ ok: true });
@@ -274,7 +291,10 @@ export function createApplication(options = {}) {
     const assignee = catalog('users', body.assigneeId, 'Исполнитель');
     if (assignee.role !== 'worker') fail(400, 'Выберите сотрудника с ролью исполнителя.');
     if (!assignee.onShift) fail(400, 'Исполнитель не на смене.');
-    if (body.brigadeId) catalog('brigades', body.brigadeId, 'Бригада');
+    if (body.brigadeId) {
+      catalog('brigades', body.brigadeId, 'Бригада');
+      if (assignee.brigadeId !== body.brigadeId) fail(400, 'Исполнитель не состоит в выбранной бригаде.');
+    }
     if (body.faultId) catalog('faults', body.faultId, 'Шифр неисправности');
     if (!['planned', 'unplanned'].includes(body.type) || !PRIORITIES.includes(body.priority)) fail(400, 'Некорректный тип или приоритет наряда.');
     const description = requireText(body.description, 'Описание работ');
@@ -292,19 +312,25 @@ export function createApplication(options = {}) {
     const order = orderFor(req, true); const body = req.body;
     if (TERMINAL.includes(order.status)) fail(409, 'Закрытый или отменённый наряд изменить нельзя.');
     const changes = []; let newAssignee;
-    if (body.priority !== undefined) { if (!PRIORITIES.includes(body.priority)) fail(400, 'Некорректный приоритет.'); order.priority = body.priority; changes.push('Изменён приоритет'); }
-    if (body.dueAt !== undefined) { order.dueAt = validDate(body.dueAt, 'Срок'); changes.push('Изменён срок'); }
-    if (body.comment !== undefined) { order.comment = text(body.comment); changes.push('Изменён комментарий'); }
+    if (body.priority !== undefined) {
+      if (!PRIORITIES.includes(body.priority)) fail(400, 'Некорректный приоритет.');
+      if (order.priority !== body.priority) { changes.push(`Приоритет: ${PRIORITY_LABELS[order.priority]} → ${PRIORITY_LABELS[body.priority]}`); order.priority = body.priority; }
+    }
+    if (body.dueAt !== undefined) {
+      const dueAt = validDate(body.dueAt, 'Срок');
+      if (order.dueAt !== dueAt) { const display = value => new Date(value).toLocaleString('ru-RU', { timeZone: 'Asia/Qyzylorda', dateStyle: 'short', timeStyle: 'short' }); changes.push(`Срок: ${display(order.dueAt)} → ${display(dueAt)} (Костанай)`); order.dueAt = dueAt; }
+    }
+    if (body.comment !== undefined && order.comment !== text(body.comment)) { changes.push(`Комментарий: «${order.comment || 'не указан'}» → «${text(body.comment) || 'не указан'}»`); order.comment = text(body.comment); }
     if (body.assigneeId !== undefined && body.assigneeId !== order.assigneeId) {
       if (['ai_review', 'completed'].includes(order.status)) fail(409, 'Дождитесь проверки ИИ перед переназначением.');
       newAssignee = catalog('users', body.assigneeId, 'Исполнитель');
       if (newAssignee.role !== 'worker' || !newAssignee.onShift) fail(400, 'Исполнитель должен быть на смене.');
-      const previous = order.assigneeId;
+      const previous = store.get('users', order.assigneeId)?.name ?? order.assigneeId;
       archiveCompletion(order, 'Наряд переназначен');
       order.assigneeId = newAssignee.id; order.brigadeId = newAssignee.brigadeId;
       delete order.startedAt; delete order.completedAt; delete order.completion; delete order.assessment;
       order.photos = (order.photos ?? []).filter(photo => photo.kind === 'before');
-      event(order, req.user, 'Наряд переназначен', `Исполнитель ${previous} → ${newAssignee.id}. ${text(body.comment)}`, 'issued'); changes.push('Изменён исполнитель');
+      event(order, req.user, 'Наряд переназначен', `Исполнитель: ${previous} → ${newAssignee.name}. ${text(body.comment)}`, 'issued'); changes.push(`Исполнитель: ${previous} → ${newAssignee.name}`);
     }
     if (!changes.length) fail(400, 'Нет изменений.');
     event(order, req.user, 'Карточка изменена', changes.join('; ')); save(order);
@@ -330,7 +356,10 @@ export function createApplication(options = {}) {
     res.json(order);
   });
   app.post('/api/orders/:id/complete', roles('worker'), (req, res) => {
-    const order = orderFor(req, true); const body = req.body;
+    const order = orderFor(req); const body = req.body;
+    const retry = retryRecord(req, 'complete', { works: body.works, faultId: body.faultId, materials: body.materials, materialsConfirmed: body.materialsConfirmed, comment: body.comment, photoIds: body.photoIds });
+    if (retry?.saved) return res.json(retry.saved.response);
+    if (body.version !== undefined && body.version !== order.version) fail(409, 'Наряд изменился. Обновите карточку и повторите действие.');
     if (order.status !== 'in_progress') fail(409, 'Отметить исполнение можно только для наряда в работе.');
     if (body.faultId) catalog('faults', body.faultId, 'Шифр неисправности');
     if (!Array.isArray(body.materials ?? []) || (body.materials?.length ?? 0) > 40) fail(400, 'Некорректный список материалов.');
@@ -344,7 +373,7 @@ export function createApplication(options = {}) {
     order.completedAt = iso(); delete order.assessment;
     event(order, req.user, 'Исполнение отмечено', order.completion.comment, 'completed');
     event(order, null, 'Отправлен на обязательную проверку ИИ', '', 'ai_review');
-    store.transaction(() => { bindPhotos(photos); order.version++; store.put('orders', order); }); broadcast();
+    store.transaction(() => { bindPhotos(photos); order.version++; store.put('orders', order); saveRetry(retry, order); }); broadcast();
     notify(order.masterId, order, 'Наряд исполнен', `№${order.number} передан на проверку ИИ.`, 'info');
     res.json(order); void review(order.id);
   });
@@ -353,14 +382,16 @@ export function createApplication(options = {}) {
     if (order.status !== 'ai_review' || !order.assessment) fail(409, 'Закрытие доступно только после завершённой проверки ИИ.');
     if (!['close', 'rework'].includes(decision)) fail(400, 'Выберите решение.');
     if (decision === 'rework' && !comment) fail(400, 'Укажите замечания для доработки.');
+    let auditComment = comment;
     if (score !== undefined) {
       const value = range(score, 1, 5, 'Оценка'); if (!Number.isInteger(value)) fail(400, 'Оценка должна быть целой.');
       if (value !== order.assessment.score && !comment) fail(400, 'Объясните изменение оценки ИИ.');
+      if (value !== order.assessment.score) auditComment = `Оценка: ${order.assessment.score} → ${value}. ${comment}`;
       order.assessment.masterScore = value;
     }
     order.assessment.masterComment = comment;
     if (decision === 'close') order.closedAt = iso();
-    event(order, req.user, decision === 'close' ? 'Мастер подтвердил закрытие' : 'Мастер вернул на доработку', comment, decision === 'close' ? 'closed' : 'rework'); save(order);
+    event(order, req.user, decision === 'close' ? 'Мастер подтвердил закрытие' : 'Мастер вернул на доработку', auditComment, decision === 'close' ? 'closed' : 'rework'); save(order);
     notify(order.assigneeId, order, decision === 'close' ? 'Наряд закрыт мастером' : 'Замечания мастера', `№${order.number}. ${comment || 'Результат принят.'}`, decision === 'close' ? 'success' : 'warning');
     res.json(order);
   });
@@ -372,28 +403,44 @@ export function createApplication(options = {}) {
     if (orderId !== undefined && typeof orderId !== 'string') fail(400, 'Некорректный идентификатор наряда.');
     if (req.user.role === 'worker' && (kind !== 'after' || !orderId)) fail(403, 'Исполнитель прикладывает фото результата к своему наряду.');
     if (req.user.role === 'master' && kind !== 'before') fail(403, 'Фото результата прикладывает исполнитель.');
+    let order;
     if (orderId) {
-      const order = store.get('orders', orderId);
+      order = store.get('orders', orderId);
       if (!order || !visible(order, req.user)) fail(403, 'Нет доступа к наряду.');
-      if (TERMINAL.includes(order.status)) fail(409, 'Наряд уже завершён.');
     }
     const capturedAt = req.body.capturedAt ? validDate(req.body.capturedAt, 'Время съёмки') : iso();
-    const prepared = [];
-    for (const file of req.files) {
-      let bytes;
-      try {
-        const input = sharp(file.buffer, { limitInputPixels: 40_000_000 });
-        const metadata = await input.metadata();
-        if (!['jpeg', 'png', 'webp'].includes(metadata.format)) throw new Error('Unsupported image format');
-        bytes = await input.rotate().resize({ width: 2048, height: 2048, fit: 'inside', withoutEnlargement: true }).flatten({ background: '#fff' }).jpeg({ quality: 80, mozjpeg: true }).toBuffer();
-      }
-      catch { fail(400, 'Файл не является корректным изображением или слишком велик.'); }
-      const id = randomUUID(); const filename = `${id}.jpg`;
-      prepared.push({ bytes, photo: { id, filename, url: `/uploads/${filename}`, kind, capturedAt, uploadedAt: iso(), authorId: req.user.id, hash: sha(bytes), ...(orderId ? { orderId } : {}) } });
+    const retry = retryRecord(req, `upload:${kind}`, { kind, orderId, capturedAt: req.body.capturedAt ?? null, files: req.files.map(file => ({ mimetype: file.mimetype, hash: sha(file.buffer) })) });
+    if (retry?.saved) return res.status(201).json(retry.saved.response);
+    if (retry && pendingUploads.has(retry.id)) {
+      const pending = pendingUploads.get(retry.id);
+      if (pending.bodyHash !== retry.bodyHash) fail(409, 'Идентификатор запроса уже использован с другими данными.');
+      return res.status(201).json(await pending.promise);
     }
-    for (const item of prepared) await writeFile(path.join(uploadDir, item.photo.filename), item.bytes, { flag: 'wx' });
-    store.transaction(() => { for (const item of prepared) store.put('photos', item.photo); });
-    res.status(201).json({ photos: prepared.map(item => item.photo) });
+    if (order && TERMINAL.includes(order.status)) fail(409, 'Наряд уже завершён.');
+    const prepare = async () => {
+      const prepared = [];
+      for (const file of req.files) {
+        let bytes, signature;
+        try {
+          const input = sharp(file.buffer, { limitInputPixels: 40_000_000 });
+          const metadata = await input.metadata();
+          if (!['jpeg', 'png', 'webp'].includes(metadata.format)) throw new Error('Unsupported image format');
+          bytes = await input.rotate().resize({ width: 2048, height: 2048, fit: 'inside', withoutEnlargement: true }).flatten({ background: '#fff' }).jpeg({ quality: 80, mozjpeg: true }).toBuffer();
+          signature = await photoSignature(bytes);
+        }
+        catch { fail(400, 'Файл не является корректным изображением или слишком велик.'); }
+        const id = randomUUID(); const filename = `${id}.jpg`;
+        prepared.push({ bytes, photo: { id, filename, url: `/uploads/${filename}`, kind, capturedAt, uploadedAt: iso(), authorId: req.user.id, hash: sha(bytes), signature, ...(orderId ? { orderId } : {}) } });
+      }
+      for (const item of prepared) await writeFile(path.join(uploadDir, item.photo.filename), item.bytes, { flag: 'wx' });
+      const response = { photos: prepared.map(item => item.photo) };
+      store.transaction(() => { for (const item of prepared) store.put('photos', item.photo); saveRetry(retry, response); });
+      return response;
+    };
+    const promise = prepare();
+    if (retry) pendingUploads.set(retry.id, { bodyHash: retry.bodyHash, promise });
+    try { res.status(201).json(await promise); }
+    finally { if (retry) pendingUploads.delete(retry.id); }
   });
   app.get('/uploads/:filename', authenticate, (req, res) => {
     if (!/^[a-f\d-]+\.jpg$/i.test(req.params.filename)) fail(404, 'Фото не найдено.');
@@ -424,13 +471,14 @@ export function createApplication(options = {}) {
   app.patch('/api/settings', roles('master', 'admin'), (req, res) => {
     const reminderMinutes = range(req.body.reminderMinutes, 1, 1440, 'Предупреждение в минутах');
     const repeatMinutes = range(req.body.repeatMinutes, 1, 1440, 'Повтор в минутах');
-    store.transaction(() => { store.setSetting('reminderMinutes', reminderMinutes); store.setSetting('repeatMinutes', repeatMinutes); store.put('audit', { id: randomUUID(), actorId: req.user.id, action: 'Настройки уведомлений изменены', at: iso(), reminderMinutes, repeatMinutes }); });
+    const comment = `Предупреждение: ${store.setting('reminderMinutes', 30)} → ${reminderMinutes} мин; повтор: ${store.setting('repeatMinutes', 30)} → ${repeatMinutes} мин.`;
+    store.transaction(() => { store.setSetting('reminderMinutes', reminderMinutes); store.setSetting('repeatMinutes', repeatMinutes); store.put('audit', { id: randomUUID(), actorId: req.user.id, actorName: req.user.name, action: 'Настройки уведомлений изменены', kind: 'settings', comment, at: iso(), reminderMinutes, repeatMinutes }); });
     broadcast(); res.json({ reminderMinutes, repeatMinutes, aiProvider: aiProvider() });
   });
   app.post('/api/catalogs/:kind', roles('admin'), (req, res) => {
     const kind = req.params.kind; const body = req.body;
     const record = catalogRecord(kind, body);
-    store.transaction(() => { store.put(kind, record); if (kind === 'users') store.db.prepare('INSERT INTO auth(user_id,login,pin_hash) VALUES(?,?,?)').run(record.id, record.login, hashPin(body.pin)); store.put('audit', { id: randomUUID(), at: iso(), actorId: req.user.id, action: 'Добавлена запись справочника', kind, recordId: record.id }); });
+    store.transaction(() => { store.put(kind, record); if (kind === 'users') store.db.prepare('INSERT INTO auth(user_id,login,pin_hash) VALUES(?,?,?)').run(record.id, record.login, hashPin(body.pin)); store.put('audit', { id: randomUUID(), at: iso(), actorId: req.user.id, actorName: req.user.name, action: 'Добавлена запись справочника', kind, recordId: record.id, ...catalogAuditDetails(kind, record) }); });
     broadcast(); res.status(201).json(record);
   });
   app.patch('/api/catalogs/:kind/:id', roles('admin'), (req, res) => {
@@ -448,7 +496,7 @@ export function createApplication(options = {}) {
         store.db.prepare('UPDATE auth SET login=? WHERE user_id=?').run(record.login, id);
         if (req.body.pin !== undefined) store.db.prepare('UPDATE auth SET pin_hash=? WHERE user_id=?').run(hashPin(req.body.pin), id);
       }
-      store.put('audit', { id: randomUUID(), at: iso(), actorId: req.user.id, action: 'Изменена запись справочника', kind, recordId: id, changedFields });
+      store.put('audit', { id: randomUUID(), at: iso(), actorId: req.user.id, actorName: req.user.name, action: 'Изменена запись справочника', kind, recordId: id, changedFields, ...catalogAuditDetails(kind, record, changedFields) });
     });
     if (kind === 'users' && (req.body.pin !== undefined || record.role !== existing.role)) {
       for (const session of store.db.prepare('SELECT token_hash FROM sessions WHERE user_id=?').all(id)) revokeSession(session.token_hash);
@@ -497,32 +545,36 @@ export function createApplication(options = {}) {
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'); res.setHeader('Content-Disposition', 'attachment; filename="naryad-ai-report.xlsx"');
     await workbook.xlsx.write(res); res.end();
   });
-  app.post('/api/assistant', roles('master', 'manager', 'admin'), (req, res) => {
+  app.post('/api/assistant', roles('master', 'manager', 'admin'), async (req, res) => {
     const message = requireText(req.body.message, 'Вопрос', 1000).toLowerCase();
     const orders = store.list('orders'); const active = orders.filter(order => !['closed', 'cancelled', 'ai_review', 'completed', 'rejected'].includes(order.status));
     const late = active.filter(order => Date.parse(order.dueAt) < Date.now());
     const scored = orders.filter(order => order.assessment); const average = scored.length ? (scored.reduce((sum, order) => sum + (order.assessment.masterScore ?? order.assessment.score), 0) / scored.length).toFixed(2) : '—';
-    const equipmentStats = store.list('equipment').map(item => ({ ...item, faults: orders.filter(order => order.equipmentId === item.id && order.type === 'unplanned').length })).sort((a, b) => b.faults - a.faults);
-    let answer;
+    let answer, modelOptions;
     if (/свобод|кто.*(?:электр|слесар|сварщик|механик)/.test(message)) {
       const specialty = /свар/.test(message) ? /свар/i : /электр/.test(message) ? /электромонт|электрик/i : /кип/.test(message) ? /кип/i : /слесар|механик/.test(message) ? /слесар|механик/i : null;
       const workers = store.list('users').filter(person => person.role === 'worker' && (!specialty || specialty.test(person.specialty ?? '')));
       const free = workers.filter(person => getWorkerWorkload(person, orders).status === 'free').sort((a, b) => (b.grade ?? 0) - (a.grade ?? 0));
       answer = `Свободных исполнителей${specialty ? ' указанной специальности' : ''} на смене: ${free.length}. ${free.map(person => `${person.name} — ${person.specialty || 'специальность не указана'}${person.grade ? `, разряд ${person.grade}` : ''}`).join('; ') || 'Подходящих свободных сотрудников нет.'} Занятые, сотрудники с очередью и вне смены исключены. Перед назначением мастер проверяет допуск к работе.`;
-    } else if (/недел|сводк|отч[её]т/.test(message)) {
-      const catalogs = Object.fromEntries(CATALOGS.map(kind => [kind, store.list(kind)]));
-      const site = catalogs.sites.find(item => item.name.toLowerCase().split(/[^а-яёa-z]+/).filter(word => word.length >= 4 && !/^(участ|комплекс|фабрик|цех)/.test(word)).some(word => message.includes(word.slice(0, 4))));
-      const period = /недел/.test(message) ? 'week' : /месяц/.test(message) ? 'month' : /сутк|сегодня/.test(message) ? 'day' : 'shift';
-      const range = getPeriodRange(period); const selectedOrders = site ? orders.filter(order => order.siteId === site.id) : orders;
-      answer = `${site ? `${site.name}. ` : 'Все участки. '}Период: ${formatDate(range.from)} — ${formatDate(range.to)}. ${buildShiftSummary(selectedOrders, catalogs, range)} Полную выгрузку за этот период можно получить в разделе «Отчёты».`;
+    } else if (/аномал|ломает|проблем|отказ|ақау|мәселе/u.test(message) || (/оборуд|конвейер|жабдық/u.test(message) && !/сводк|отч[её]т|есеп|қорытынды/u.test(message))) {
+      const catalogs = Object.fromEntries(CATALOGS.map(kind => [kind, store.list(kind)])); const at = new Date();
+      const scope = parseAssistantScope(message, catalogs, at, 'month');
+      if (scope.error) return res.json({ answer: scope.error, provider: 'demo-rules' });
+      answer = buildScopedAnomalyAnswer(message, orders, catalogs, at);
+      modelOptions = { at, scopeOrders: filterOrders(orders.filter(order => Date.parse(order.createdAt) <= at.getTime() && order.status !== 'cancelled'), scope.filters, catalogs, at) };
+    } else if (/недел|сводк|отч[её]т|апта|есеп|қорытынды/u.test(message)) {
+      const catalogs = Object.fromEntries(CATALOGS.map(kind => [kind, store.list(kind)])); const at = new Date();
+      const scope = parseAssistantScope(message, catalogs, at, 'shift');
+      if (scope.error) return res.json({ answer: scope.error, provider: 'demo-rules' });
+      answer = buildScopedSummaryAnswer(message, orders, catalogs, at);
+      modelOptions = { at, scopeOrders: filterOrders(orders.filter(order => Date.parse(order.createdAt) <= at.getTime()), scope.filters, catalogs, at) };
     } else if (/просроч|срок/.test(message)) answer = `Сейчас просрочено ${late.length} активных нарядов: ${late.slice(0, 6).map(order => `№${order.number} (${store.get('equipment', order.equipmentId)?.name})`).join(', ') || 'нет'}. Исполнителям и мастерам отправляются повторные уведомления каждые ${store.setting('repeatMinutes', 30)} мин.`;
     else if (/материал|тмц|расход/.test(message)) {
       const excess = orders.filter(order => order.completion?.materials.some(item => item.quantity > (store.get('materials', item.materialId)?.normalQuantity ?? Infinity) * 2));
       answer = `В ${excess.length} нарядах расход хотя бы одной позиции выше справочного более чем вдвое. Это сигнал для проверки, а не доказательство нарушения. Проверьте причины, нормативы и объём фактически выполненных работ. Примеры: ${excess.slice(0, 5).map(order => `№${order.number}`).join(', ') || 'не обнаружены'}.`;
     } else if (/рейтинг|оцен|лучш/.test(message)) answer = `Проверено ${scored.length} нарядов, средняя итоговая оценка ${average}/5. Рейтинг в разделе «Команда» использует оценки мастера при наличии и оценки ИИ в остальных случаях. Сравнивайте сотрудников с учётом специальности и сложности работ.`;
-    else if (/оборуд|аномал|ломает|конвейер|проблем|отказ/.test(message)) answer = `Наибольшее количество внеплановых нарядов за всю доступную историю: ${equipmentStats.slice(0, 3).map(item => `${item.name} — ${item.faults}`).join('; ')}. Это частота заявок, а не вероятность отказа. Рекомендуется разбор причин и плановый осмотр лидирующего узла.`;
     else answer = `В базе ${orders.length} нарядов, активных ${active.length}, просроченных ${late.length}, ожидают решения мастера ${orders.filter(order => order.status === 'ai_review' && order.assessment).length}. Средняя оценка ${average}/5. Можно спросить о сроках, расходе ТМЦ, рейтинге или проблемном оборудовании.`;
-    res.json({ answer: `Статистический режим · по данным базы на ${new Date().toLocaleString('ru-RU', { timeZone: 'Asia/Qyzylorda' })}.\n\n${answer}` });
+    res.json(await answerAssistant(message, store, req.user, answer, modelOptions));
   });
   app.use('/api', (req, res) => res.status(404).json({ error: 'API-метод не найден.' }));
   const distDir = path.resolve(options.distDir ?? 'dist');
@@ -537,12 +589,15 @@ export function createApplication(options = {}) {
     res.status(status).json({ error: error instanceof multer.MulterError ? 'Слишком много файлов или файл больше 8 МБ.' : status >= 500 ? 'Ошибка сервера. Повторите действие.' : error.message });
   });
   const timers = [];
+  function sweepWeeklyReports(at = new Date()) { const result = deliverWeeklySummary(store, at); if (result.delivered) broadcast(); return result; }
   if (options.startTimers !== false) {
     sweepDeadlines();
+    sweepWeeklyReports();
+    timers.push(setInterval(() => { if (!stopping) sweepWeeklyReports(); }, 60000));
     timers.push(setInterval(() => { if (!stopping) { sweepDeadlines(); for (const order of store.list('orders')) if (order.status === 'ai_review' && !order.assessment) void review(order.id); } }, 5000));
     timers.push(setInterval(() => { for (const client of clients) { const session = store.db.prepare('SELECT expires_at FROM sessions WHERE token_hash=?').get(client.sessionHash); if (!session || session.expires_at < Date.now()) { client.res.end(); clients.delete(client); } else client.res.write(': heartbeat\n\n'); } }, 20000));
     for (const timer of timers) timer.unref();
     for (const order of store.list('orders')) if (order.status === 'ai_review' && !order.assessment) void review(order.id);
   }
-  return { app, store, sweepDeadlines, review, async waitForReviews() { await Promise.all(reviewJobs.values()); }, async close() { stopping = true; timers.forEach(clearInterval); for (const client of clients) client.res.end(); clients.clear(); await Promise.all(reviewJobs.values()); store.close(); } };
+  return { app, store, sweepDeadlines, sweepWeeklyReports, review, async waitForReviews() { await Promise.all(reviewJobs.values()); }, async close() { stopping = true; timers.forEach(clearInterval); for (const client of clients) client.res.end(); clients.clear(); await Promise.all(reviewJobs.values()); store.close(); } };
 }

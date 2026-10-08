@@ -4,6 +4,7 @@ export const TIME_ZONE = 'Asia/Qyzylorda'
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
 const DAY = 24 * HOUR
+const LOCAL_PARTS_FORMATTER = new Intl.DateTimeFormat('en-CA', { timeZone: TIME_ZONE, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' })
 
 export const STATUS_LABELS: Record<OrderStatus, string> = {
   issued: 'Выдан', accepted: 'Принят в работу', queued: 'В очереди', rejected: 'Отклонён',
@@ -66,7 +67,7 @@ export function isOnTime(order: Order): boolean {
 
 /** Offset is calculated by IANA rules rather than by the computer's local zone. */
 function localParts(date: DateValue): Record<string, number> {
-  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: TIME_ZONE, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).formatToParts(timestamp(date))
+  const parts = LOCAL_PARTS_FORMATTER.formatToParts(timestamp(date))
   return Object.fromEntries(parts.filter(part => part.type !== 'literal').map(part => [part.type, Number(part.value)]))
 }
 function zonedTimestamp(year: number, month: number, day: number, hour = 0): number {
@@ -266,9 +267,15 @@ export function getMaterialStats(orders: Order[], materials: Material[], filters
   }).filter(item => item.orderCount > 0).sort((a, b) => b.outlierCount - a.outlierCount || b.orderCount - a.orderCount)
 }
 
-export interface Anomaly { id: string; type: 'repeat_fault' | 'frequency' | 'materials' | 'post_maintenance' | 'rework'; severity: 'high' | 'medium'; title: string; description: string; recommendation: string; orderIds: string[]; equipmentId?: string; userId?: string; count: number }
+export interface Anomaly {
+  id: string
+  type: 'repeat_fault' | 'frequency' | 'materials' | 'post_maintenance' | 'rework' | 'shift_dependency' | 'worker_dependency' | 'brigade_dependency' | 'failure_growth'
+  severity: 'high' | 'medium'; title: string; description: string; recommendation: string; orderIds: string[]
+  equipmentId?: string; userId?: string; brigadeId?: string; count: number
+  evidence?: { currentCount: number; previousCount: number; windowDays: number; ratio: number }
+}
 /** Findings are deterministic evidence-based signals; correlation is not a proven cause. */
-export function detectAnomalies(orders: Order[], catalogs: Catalogs, filters: OrderFilters = {}): Anomaly[] {
+export function detectAnomalies(orders: Order[], catalogs: Catalogs, filters: OrderFilters = {}, now: DateValue = Date.now()): Anomaly[] {
   const selected = filterOrders(orders, filters, catalogs).filter(order => order.status !== 'cancelled'), findings: Anomaly[] = []
   const stats = getEquipmentStats(orders, catalogs.equipment, filters)
   const counts = stats.map(item => item.unplannedCount).sort((a, b) => a - b)
@@ -296,7 +303,69 @@ export function detectAnomalies(orders: Order[], catalogs: Catalogs, filters: Or
     const own = selected.filter(order => order.assigneeId === user.id && (order.status === 'closed' || order.assessment)), reworks = own.filter(hadRework)
     if (own.length >= 5 && reworks.length >= 3 && reworks.length / own.length >= 0.25) findings.push({ id: `rework-${user.id}`, type: 'rework', severity: 'medium', title: `${user.name}: частые доработки`, description: `${reworks.length} из ${own.length} проверенных нарядов (${Math.round(100 * reworks.length / own.length)}%) возвращались на доработку. Учитывайте сложность работ перед оценкой сотрудника.`, recommendation: 'Разобрать причины возвратов с мастером, проверить инструкции, доступность материалов и необходимость наставничества.', orderIds: reworks.map(order => order.id), userId: user.id, count: reworks.length })
   }
+  findings.push(...detectDependencies(orders, selected, catalogs, now), ...detectFailureGrowth(orders, catalogs, filters, now))
   return findings.sort((a, b) => (a.severity === 'high' ? 0 : 1) - (b.severity === 'high' ? 0 : 1) || b.count - a.count)
+}
+
+/** Compare proportions, not raw assignment counts. Small groups never produce a personnel finding. */
+function detectDependencies(allOrders: Order[], selected: Order[], catalogs: Catalogs, now: DateValue): Anomaly[] {
+  const findings: Anomaly[] = []
+  const groups = [true, false].map(isDay => {
+    const own = selected.filter(order => { const time = timestamp(order.createdAt); if (!Number.isFinite(time)) return false; const hour = localParts(time).hour; return (hour >= 8 && hour < 20) === isDay })
+    return { isDay, own, failures: own.filter(order => order.type === 'unplanned') }
+  })
+  for (const [index, group] of groups.entries()) {
+    const peer = groups[1 - index], rate = group.failures.length / group.own.length, peerRate = peer.failures.length / peer.own.length
+    if (group.own.length < 8 || peer.own.length < 8 || group.failures.length < 5 || rate - peerRate < 0.3 || rate < peerRate * 1.7) continue
+    const shift = group.isDay ? 'Дневная смена' : 'Ночная смена'
+    findings.push({ id: `shift-${group.isDay ? 'day' : 'night'}`, type: 'shift_dependency', severity: 'medium', title: `${shift}: выше доля внеплановых работ`,
+      description: `${group.failures.length} из ${group.own.length} выданных нарядов (${Math.round(rate * 100)}%) — внеплановые; в другой смене ${peer.failures.length} из ${peer.own.length} (${Math.round(peerRate * 100)}%). Группа определяется по времени выдачи в ${TIME_ZONE}; это связь в заявках, а не установленное время поломки или её причина.`,
+      recommendation: 'Сопоставить режим нагрузки и состав оборудования смен, время обнаружения дефектов и записи передачи смены. Проверить первопричины до изменения регламента.',
+      orderIds: [...group.own, ...peer.own].map(order => order.id), count: group.failures.length })
+  }
+
+  const repeats = repeatedRepairIds(allOrders)
+  // Every compared repair has the same complete seven-day observation window.
+  const mature = selected.filter(order => order.status === 'closed' && timestamp(completedTime(order)) <= timestamp(now) - 7 * DAY)
+  const problematic = (order: Order) => hadRework(order) || repeats.has(order.id)
+  const compare = (id: string, name: string, kind: 'worker' | 'brigade', matches: (order: Order) => boolean) => {
+    const own = mature.filter(matches), peers = mature.filter(order => !matches(order))
+    const affected = own.filter(problematic), peerAffected = peers.filter(problematic)
+    const rate = affected.length / own.length, peerRate = peerAffected.length / peers.length
+    if (own.length < 8 || peers.length < 8 || affected.length < 4 || rate < 0.35 || rate - peerRate < 0.2 || rate < peerRate * 1.7) return
+    findings.push({ id: `dependency-${kind}-${id}`, type: kind === 'worker' ? 'worker_dependency' : 'brigade_dependency', severity: 'medium', title: `${name}: связь с повторными работами`,
+      description: `В ${affected.length} из ${own.length} закрытых ремонтов (${Math.round(rate * 100)}%) была доработка или тот же дефект в следующие 7 дней; в остальной выбранной группе — ${peerAffected.length} из ${peers.length} (${Math.round(peerRate * 100)}%). Учтены только ремонты с полными 7 днями наблюдения. Связь не доказывает вину исполнителя или бригады.`,
+      recommendation: 'Сравнить одинаковые типы оборудования и сложность заданий; проверить качество деталей, инструкции и допуски. Разобрать причины вместе с мастером, без автоматических взысканий.',
+      orderIds: [...own, ...peers].map(order => order.id), count: affected.length, ...(kind === 'worker' ? { userId: id } : { brigadeId: id }) })
+  }
+  for (const user of catalogs.users.filter(user => user.role === 'worker')) compare(user.id, user.name, 'worker', order => order.assigneeId === user.id)
+  for (const brigade of catalogs.brigades) compare(brigade.id, brigade.name, 'brigade', order => (order.brigadeId || catalogs.users.find(user => user.id === order.assigneeId)?.brigadeId) === brigade.id)
+  return findings
+}
+
+/** Early warning only: two equal recent windows, with at least seven days in each. No failure probability is inferred. */
+function detectFailureGrowth(orders: Order[], catalogs: Catalogs, filters: OrderFilters, now: DateValue): Anomaly[] {
+  const end = Math.min(filters.to ? timestamp(filters.to) : timestamp(now), timestamp(now))
+  const span = filters.from ? end - timestamp(filters.from) : 28 * DAY
+  const window = Math.min(14 * DAY, span / 2)
+  if (!Number.isFinite(window) || window < 7 * DAY) return []
+  const middle = end - window, start = middle - window
+  const selected = filterOrders(orders, { ...filters, from: new Date(start), to: new Date(end), dateField: 'createdAt' }, catalogs, now)
+    .filter(order => order.type === 'unplanned' && order.status !== 'cancelled')
+  const findings: Anomaly[] = []
+  for (const equipment of catalogs.equipment) {
+    const own = selected.filter(order => order.equipmentId === equipment.id)
+    const previous = own.filter(order => timestamp(order.createdAt) < middle), current = own.filter(order => timestamp(order.createdAt) >= middle)
+    const days = (rows: Order[]) => new Set(rows.map(order => { const p = localParts(order.createdAt); return `${p.year}-${p.month}-${p.day}` })).size
+    if (previous.length < 2 || current.length < 5 || current.length - previous.length < 3 || current.length / previous.length < 2.5 || days(previous) < 2 || days(current) < 3) continue
+    const ratio = round(current.length / previous.length), windowDays = round(window / DAY, 1)
+    findings.push({ id: `growth-${equipment.id}`, type: 'failure_growth', severity: 'high', title: `${equipment.name}: растёт частота внеплановых работ`,
+      description: `За последние ${windowDays} дней — ${current.length} внеплановых нарядов, за предыдущие равные ${windowDays} дней — ${previous.length}; рост в ${ratio} раза. Сравнение: ${formatDate(start)}–${formatDate(middle)} и ${formatDate(middle)}–${formatDate(end)} (правая граница не включается). Это ранний сигнал риска по заявкам, а не рассчитанная вероятность или дата отказа.`,
+      recommendation: 'Назначить диагностику до следующей смены, проверить повторяющиеся дефекты и запас критичных деталей; сопоставить рост с наработкой и изменениями режима эксплуатации.',
+      orderIds: own.map(order => order.id), equipmentId: equipment.id, count: current.length,
+      evidence: { currentCount: current.length, previousCount: previous.length, windowDays, ratio } })
+  }
+  return findings
 }
 
 export interface OrderTrendPoint { key: string; label: string; total: number; planned: number; unplanned: number; closed: number; overdue: number }
@@ -326,7 +395,35 @@ export function getDashboardStats(orders: Order[], users: User[], range: OrderFi
   const active = selected.filter(order => ACTIVE_STATUSES.includes(order.status)), issued = selected.filter(order => isInRange(order.createdAt, range)), completed = selected.filter(order => isInRange(completedTime(order), range)), reviewed = completed.filter(order => order.assessment), workload = getWorkerWorkloads(people, orders, now)
   return { issued: issued.length, completed: completed.length, closed: selected.filter(order => order.status === 'closed' && isInRange(order.closedAt, range)).length, overdue: active.filter(order => isOverdue(order, now)).length, active: active.length, inProgress: active.filter(order => order.status === 'in_progress').length, awaitingReview: selected.filter(order => order.status === 'ai_review').length, rejected: selected.filter(order => order.events.some(event => event.toStatus === 'rejected' && isInRange(event.at, range))).length, downtimeEquipment: new Set(active.filter(order => order.type === 'unplanned').map(order => order.equipmentId)).size, freeWorkers: workload.filter(worker => worker.status === 'free').length, onShiftWorkers: workload.filter(worker => worker.user.onShift).length, averageScore: reviewed.length ? round(reviewed.reduce((sum, order) => sum + (order.assessment!.masterScore ?? order.assessment!.score), 0) / reviewed.length, 2) : 0, onTimePercent: completed.length ? round(completed.filter(isOnTime).length / completed.length * 100) : 0 }
 }
+export interface ManagementStats {
+  avgReactionMinutes: number | null; avgExecutionHours: number | null; reactionSampleCount: number; executionSampleCount: number
+  downtimeHours: number; topEquipment: EquipmentStats[]; topWorkers: WorkerRating[]
+}
+/** Reaction is issue to first worker response; execution is start to submission, including pauses. */
+export function getManagementStats(orders: Order[], catalogs: Catalogs, filters: OrderFilters = {}, now: DateValue = Date.now()): ManagementStats {
+  const normalized = orders.map(order => order.brigadeId ? order : { ...order, brigadeId: catalogs.users.find(user => user.id === order.assigneeId)?.brigadeId || undefined })
+  const scope = filterOrders(normalized, { ...filters, from: undefined, to: undefined }, catalogs, now).filter(order => order.status !== 'cancelled')
+  const reaction: number[] = [], execution: number[] = []
+  for (const order of scope) {
+    const response = [...order.events].filter(event => event.toStatus && ['accepted', 'queued', 'rejected', 'in_progress'].includes(event.toStatus))
+      .map(event => timestamp(event.at)).filter(time => time >= timestamp(order.createdAt) && time <= timestamp(now)).sort((a, b) => a - b)[0]
+    const respondedAt = Number.isFinite(response) ? response : timestamp(order.startedAt)
+    if (isInRange(order.createdAt, filters) && respondedAt >= timestamp(order.createdAt) && respondedAt <= timestamp(now)) reaction.push((respondedAt - timestamp(order.createdAt)) / MINUTE)
+    const completed = completedTime(order), started = timestamp(order.startedAt)
+    if (!ACTIVE_STATUSES.includes(order.status) && order.status !== 'rejected' && isInRange(completed, filters) && timestamp(completed) >= started && timestamp(completed) <= timestamp(now)) execution.push((timestamp(completed) - started) / HOUR)
+  }
+  const equipment = getEquipmentStats(normalized, catalogs.equipment || [], filters, now)
+  return { avgReactionMinutes: reaction.length ? round(reaction.reduce((sum, value) => sum + value, 0) / reaction.length) : null,
+    avgExecutionHours: execution.length ? round(execution.reduce((sum, value) => sum + value, 0) / execution.length, 2) : null,
+    reactionSampleCount: reaction.length, executionSampleCount: execution.length,
+    downtimeHours: round(equipment.reduce((sum, item) => sum + item.downtimeHours, 0)),
+    topEquipment: equipment.filter(item => item.orderCount || item.downtimeHours).slice(0, 5),
+    topWorkers: calculateRatings(normalized, catalogs.users, filters).filter(item => item.evaluated).slice(0, 5) }
+}
+
 export function buildShiftSummary(orders: Order[], catalogs: Catalogs, range: OrderFilters = getShiftRange(), now: DateValue = Date.now()): string {
   const stats = getDashboardStats(orders, catalogs.users, range, now)
-  return `За выбранный период выдано ${stats.issued} нарядов, исполнено ${stats.completed}, закрыто мастером ${stats.closed}. Сейчас в работе ${stats.inProgress}, ожидают проверки ${stats.awaitingReview}, просрочено ${stats.overdue}. Свободных исполнителей на смене: ${stats.freeWorkers} из ${stats.onShiftWorkers}. В срок исполнено ${stats.onTimePercent}%. ${stats.overdue ? 'Рекомендуется уточнить причины просрочки и перераспределить срочные работы с учётом допуска и специальности.' : 'Активных просрочек нет; контролируйте ближайшие сроки и приёмку выполненных работ.'}`
+  const management = getManagementStats(orders, catalogs, range, now)
+  const timing = [management.avgReactionMinutes === null ? '' : `Средняя реакция на выданные за период наряды: ${management.avgReactionMinutes} мин (${management.reactionSampleCount} с ответом).`, management.avgExecutionHours === null ? '' : `Среднее исполнение: ${formatDuration(management.avgExecutionHours)}, включая паузы (${management.executionSampleCount} отчётов).`].filter(Boolean).join(' ')
+  return `За выбранный период выдано ${stats.issued} нарядов, исполнено ${stats.completed}, закрыто мастером ${stats.closed}. Отклонено исполнителями: ${stats.rejected}. Сейчас в работе ${stats.inProgress}, ожидают проверки ${stats.awaitingReview}, просрочено ${stats.overdue}. Свободных исполнителей на смене: ${stats.freeWorkers} из ${stats.onShiftWorkers}; заняты или имеют очередь: ${stats.onShiftWorkers - stats.freeWorkers}. В срок исполнено ${stats.onTimePercent}%. Расчётный простой оборудования за период: ${formatDuration(management.downtimeHours)}. ${timing}${timing ? ' ' : ''}${stats.overdue ? 'Рекомендуется уточнить причины просрочки и перераспределить срочные работы с учётом допуска и специальности.' : 'Активных просрочек нет; контролируйте ближайшие сроки и приёмку выполненных работ.'}`
 }

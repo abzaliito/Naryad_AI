@@ -198,9 +198,22 @@ try {
   await hold(1700);
   await detail.getByRole('button', { name: 'Принять и закрыть', exact: true }).click();
   await waitForOrder(order.id, item => item.status === 'closed');
-  await detail.getByRole('button', { name: /^История/ }).click(); await hold(3500);
+  await detail.getByRole('button', { name: /^Журнал наряда/ }).click(); await hold(3500);
   await detail.getByRole('button', { name: 'Проверка и отчёт', exact: false }).click(); await hold(3500);
   await detail.getByRole('button', { name: 'Закрыть окно', exact: true }).click();
+
+  chapter('Общий журнал: авторы, время и изменения наряда');
+  await page.locator('nav').getByRole('button', { name: 'Журнал действий', exact: true }).click();
+  await page.getByRole('searchbox', { name: 'Поиск по журналу' }).fill(order.number);
+  await page.locator('.activity-table tbody tr').first().waitFor(); await hold(3000);
+
+  chapter('Оборудование: история ремонтов и QR-код');
+  await page.locator('nav').getByRole('button', { name: 'Оборудование', exact: true }).click();
+  await page.locator('.equipment-card').first().click();
+  await page.locator('.equipment-qr img').waitFor(); await hold(3500);
+  await page.getByRole('dialog').getByRole('button', { name: 'Закрыть окно', exact: true }).click();
+  await page.getByRole('button', { name: 'Қазақша', exact: true }).click(); await hold(2000);
+  await page.getByRole('button', { name: 'Русский', exact: true }).click();
 
   chapter('Аналитика за три месяца и найденные закономерности');
   await page.locator('nav').getByRole('button', { name: 'Аналитика и отчёты', exact: true }).click();

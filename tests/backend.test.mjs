@@ -4,6 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createECDH } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import sharp from 'sharp';
 import { createApplication } from '../server/app.mjs';
 import { assessOrder } from '../server/ai.mjs';
@@ -363,4 +364,93 @@ test('Rework requires new photographic evidence even within the same work order'
   await h.request('POST', `/api/orders/${order.id}/transition`, { status: 'in_progress' }, 'worker');
   const reuploaded = await upload(); assert.notEqual(reuploaded.id, original.id);
   assert.equal((await complete(reuploaded)).status, 'rework');
+});
+
+test('Offline submission retries are idempotent across uploads, AI review and changed order versions', async t => {
+  const h = await harness(t); const order = (await h.create()).body;
+  await h.request('POST', `/api/orders/${order.id}/transition`, { status: 'accepted' }, 'worker');
+  await h.request('POST', `/api/orders/${order.id}/transition`, { status: 'in_progress' }, 'worker');
+  const requestId = randomUUID();
+  const bytes = await sharp({ create: { width: 64, height: 64, channels: 3, background: '#20735a' } }).png().toBuffer();
+  const upload = (data = bytes, role = 'worker') => {
+    const form = new FormData(); form.set('kind', 'after'); form.set('orderId', order.id); form.set('requestId', `${requestId}:0`); form.append('photos', new Blob([data], { type: 'image/png' }), 'result.png');
+    return h.request('POST', '/api/uploads', form, role);
+  };
+  const [firstPhoto, concurrentPhoto] = await Promise.all([upload(), upload()]);
+  assert.equal(firstPhoto.status, 201); assert.deepEqual(concurrentPhoto.body, firstPhoto.body);
+  assert.equal(h.store.list('photos').length, 1);
+  assert.deepEqual((await upload()).body, firstPhoto.body);
+  assert.equal((await upload(Buffer.from('different-image'))).status, 409);
+  assert.equal((await upload(bytes, 'other')).status, 403);
+  const body = { requestId, version: h.store.get('orders', order.id).version, works: 'Заменена манжета и проверена герметичность на пробном пуске.', faultId: 'fault', materials: [], materialsConfirmed: true, photoIds: [firstPhoto.body.photos[0].id] };
+  const first = await h.request('POST', `/api/orders/${order.id}/complete`, body, 'worker');
+  assert.equal(first.status, 200); assert.equal(first.body.status, 'ai_review');
+  await h.waitForReviews();
+  const before = h.store.get('orders', order.id);
+  const repeated = await h.request('POST', `/api/orders/${order.id}/complete`, body, 'worker');
+  assert.equal(repeated.status, 200); assert.deepEqual(repeated.body, first.body);
+  assert.deepEqual(h.store.get('orders', order.id), before, 'Retry must not append events, resubmit evidence or rerun AI');
+  assert.equal((await h.request('POST', `/api/orders/${order.id}/complete`, { ...body, works: 'Different report' }, 'worker')).status, 409);
+  assert.equal((await h.request('POST', `/api/orders/${order.id}/complete`, body, 'other')).status, 403);
+  assert.equal((await h.request('POST', `/api/orders/${order.id}/complete`, { ...body, requestId: 'invalid' }, 'worker')).status, 400);
+  await h.request('POST', `/api/orders/${order.id}/transition`, { status: 'cancelled', reason: 'Тест отмены после передачи отчёта' });
+  assert.deepEqual((await upload()).body, firstPhoto.body, 'A lost upload response remains retrievable after completion');
+  assert.deepEqual((await h.request('POST', `/api/orders/${order.id}/complete`, body, 'worker')).body, first.body);
+});
+
+test('Explicit brigade assignment must match the responsible worker brigade', async t => {
+  const h = await harness(t);
+  h.store.put('brigades', { id: 'other-brigade', name: 'Вторая бригада' });
+  assert.equal((await h.create({ brigadeId: 'other-brigade' })).status, 400);
+  assert.equal((await h.create({ assigneeId: 'other', brigadeId: 'brigade' })).status, 400);
+  assert.equal(h.store.list('orders').length, 0, 'Invalid brigade assignment must not create a work order');
+  const explicit = await h.create({ brigadeId: 'brigade' });
+  assert.equal(explicit.status, 201); assert.equal(explicit.body.brigadeId, 'brigade'); assert.equal(explicit.body.assigneeId, 'worker');
+  assert.ok(h.store.list('notifications').some(item => item.orderId === explicit.body.id && item.userId === 'worker'));
+  assert.equal((await h.create()).body.brigadeId, 'brigade', 'Omitted brigade inherits the responsible worker brigade');
+});
+
+test('Assistant problem requests keep site and period filters instead of returning a global lifetime ranking', async t => {
+  const h = await harness(t); const original = (await h.create()).body;
+  h.store.put('sites', { id: 'site', name: 'Дробильно-сортировочный комплекс' });
+  h.store.put('sites', { id: 'enrichment', name: 'Обогатительная фабрика' });
+  h.store.put('equipment', { id: 'separator', name: 'Сепаратор СМ-1', siteId: 'enrichment', inventory: '002', type: 'Сепаратор' });
+  const at = Date.now();
+  for (const [id, days, other] of [[original.id, 1, false], ['second', 2, false], ['third', 3, false], ['ancient', 60, false], ['future', -2, false], ['foreign-site', 1, true]]) {
+    const createdAt = new Date(at - days * 86400000).toISOString();
+    h.store.put('orders', { ...original, id, number: id, status: 'closed', createdAt, startedAt: createdAt, completedAt: new Date(Date.parse(createdAt) + 3600000).toISOString(), closedAt: new Date(Date.parse(createdAt) + 3600000).toISOString(), dueAt: new Date(Date.parse(createdAt) + 7200000).toISOString(), ...(other ? { siteId: 'enrichment', equipmentId: 'separator' } : {}) });
+  }
+  for (const period of ['месяц', 'неделю']) {
+    const result = await h.request('POST', '/api/assistant', { message: `Покажи проблемы участка дробления за ${period}` });
+    assert.equal(result.status, 200); assert.equal(result.body.provider, 'demo-rules');
+    assert.match(result.body.answer, /В выбранном периоде: 3 нарядов, внеплановых 3/);
+    assert.match(result.body.answer, /Насос: повторяется F01/); assert.match(result.body.answer, /Рекомендация:/);
+    assert.doesNotMatch(result.body.answer, /Сепаратор СМ-1/);
+  }
+  const other = await h.request('POST', '/api/assistant', { message: 'Покажи проблемы участка обогащения за месяц' });
+  assert.match(other.body.answer, /В выбранном периоде: 1 нарядов, внеплановых 1/); assert.match(other.body.answer, /Сепаратор СМ-1/);
+  assert.equal((await h.request('POST', '/api/assistant', { message: 'Покажи проблемы участка дробления за месяц' }, 'worker')).status, 403);
+  const originalFetch = globalThis.fetch;
+  const previous = { AI_BASE_URL: process.env.AI_BASE_URL, AI_MODEL: process.env.AI_MODEL };
+  let evidence, modelCalls = 0;
+  process.env.AI_BASE_URL = 'https://scope-model.invalid/v1'; process.env.AI_MODEL = 'scope-fixture';
+  globalThis.fetch = async (url, options) => {
+    if (!String(url).startsWith('https://scope-model.invalid/')) return originalFetch(url, options);
+    modelCalls++; evidence = JSON.parse(JSON.parse(options.body).messages[1].content).evidence;
+    return Response.json({ choices: [{ message: { content: '{"explanation":"Проверьте повторяющиеся дефекты в выбранном периоде.","confidence":0.9}' } }] });
+  };
+  try {
+    const scoped = await h.request('POST', '/api/assistant', { message: 'Покажи проблемы участка дробления за месяц' });
+    assert.equal(scoped.body.provider, 'configured-model'); assert.equal(evidence.totalOrders, 3); assert.deepEqual(evidence.statuses, { closed: 3 });
+    assert.equal(evidence.equipment.length, 1); assert.equal(evidence.equipment[0].name, 'Насос'); assert.equal(evidence.equipment[0].unplannedOrders, 3);
+    assert.deepEqual(evidence.workforceBySpecialty, []);
+    const summary = await h.request('POST', '/api/assistant', { message: 'Сформируй отчёт участка обогащения за неделю' });
+    assert.equal(summary.body.provider, 'configured-model'); assert.equal(evidence.totalOrders, 1); assert.equal(evidence.equipment[0].name, 'Сепаратор СМ-1');
+    const before = modelCalls;
+    const unknown = await h.request('POST', '/api/assistant', { message: 'Покажи проблемы участка несуществующего за месяц' });
+    assert.equal(unknown.body.provider, 'demo-rules'); assert.match(unknown.body.answer, /не найден/); assert.equal(modelCalls, before, 'Unknown scope must be clarified without a model call');
+  } finally {
+    globalThis.fetch = originalFetch;
+    for (const [key, value] of Object.entries(previous)) if (value === undefined) delete process.env[key]; else process.env[key] = value;
+  }
 });

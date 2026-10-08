@@ -11,10 +11,12 @@ const dataDir = process.env.E2E_DATA_DIR ?? mkdtempSync(path.join(tmpdir(), 'nar
 
 export default defineConfig({
   testDir: './tests',
-  testMatch: '**/e2e.spec.ts',
+  testMatch: '**/*.spec.ts',
   fullyParallel: false,
   workers: 1,
-  timeout: 45_000,
+  // End-to-end scenarios include login, several screens and screenshots on the demo laptop.
+  // Individual expectations still have their own shorter deadline below.
+  timeout: 90_000,
   expect: { timeout: 12_000 },
   outputDir: 'test-results',
   reporter: [['list'], ['html', { open: 'never' }]],

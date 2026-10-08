@@ -1,0 +1,17 @@
+.language-switch { display: inline-flex; flex: none; align-items: center; gap: 3px; padding: 4px; border: 1px solid #d7e4d9; border-radius: 10px; background: #f2f7f1; }
+.language-switch button { display: inline-flex; align-items: center; justify-content: center; min-width: 39px; min-height: 31px; padding: 5px 9px; border: 0; border-radius: 7px; background: transparent; color: #49684f; font: inherit; font-size: 11px; font-weight: 750; letter-spacing: .3px; cursor: pointer; }
+.language-switch button[aria-pressed="true"] { background: #fff; color: #204c31; box-shadow: 0 1px 5px #1b482522; }
+.language-switch button:hover { color: #163e25; }
+.language-switch button:focus-visible { outline: 2px solid #6b9b73; outline-offset: 2px; }
+.sidebar .language-switch { align-self: flex-start; margin-bottom: 10px; background: #ffffff0d; border-color: #ffffff29; }
+.sidebar .language-switch button { color: #c6d8c6; }
+.sidebar .language-switch button[aria-pressed="true"] { color: #22452b; background: #e4efd9; }
+.login-form > .language-switch { align-self: flex-end; margin-bottom: 18px; }
+@media (max-width: 760px) {
+  .sidebar .language-switch { background: #f1f6ee; border-color: #dce7d8; }
+  .sidebar .language-switch button { color: #48684f; min-height: 34px; }
+  .sidebar .language-switch button[aria-pressed="true"] { background: #fff; color: #224b30; }
+  .topbar .language-switch { padding: 3px; }
+  .topbar .language-switch button { min-width: 30px; min-height: 30px; padding: 4px 6px; font-size: 10px; }
+}
+@media print { .language-switch { display: none !important; } }
