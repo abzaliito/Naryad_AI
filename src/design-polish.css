@@ -1,0 +1,121 @@
+/* Stronger hierarchy and card contrast across the existing green visual system. */
+@media screen {
+  :root {
+    background: #f3f7f4;
+    --green: #1f583b;
+    --line: #d5e2d8;
+    --shadow: 0 5px 18px #173c2612;
+  }
+
+  .page-heading { margin-bottom: 25px; }
+  .page-heading h1 { color: #163b27; font-size: 30px; font-weight: 800; letter-spacing: -.7px; }
+  .page-heading p { color: #506b59; font-size: 14px; font-weight: 500; }
+  .panel, .stat-card, .filterbar { border-color: var(--line); box-shadow: var(--shadow); }
+  .panel { border-radius: 15px; }
+  .panel-heading h2, .panel-heading h3 { color: #173d29; font-weight: 750; }
+  .panel-heading p { color: #566d5b; }
+
+  .button.primary { background: #205c3e; box-shadow: 0 5px 13px #173e2729; }
+  .button.primary:hover { background: #174b31; box-shadow: 0 7px 18px #173e2733; }
+  .button.secondary { border-color: #c9d9cd; color: #244b34; box-shadow: 0 2px 7px #193f2310; }
+  .filterbar { min-height: 60px; border-radius: 13px; }
+  .filter-left select {
+    background: #f0f5f1;
+    border: 1px solid #e0eae1;
+    color: #244631;
+    font-weight: 600;
+  }
+  .search input::placeholder { color: #5e7666; }
+  .tabs > button { color: #56705e; font-weight: 650; }
+  .tabs > button.active { border-bottom-width: 3px; border-color: #2d7448; color: #1d5737; font-weight: 750; }
+
+  .stat-card { border-top: 3px solid #76a678; }
+  .stat-card.blue { border-top-color: #7a9fbd; }
+  .stat-card.orange { border-top-color: #d8a171; }
+  .stat-card.purple { border-top-color: #a48fc0; }
+  .stat-value { color: #133a25; font-weight: 800; }
+  .kanban-column { background: #eaf1ec; border-color: #d8e5db; }
+  .kanban-card { border-color: #d5e2d8; box-shadow: 0 4px 12px #143a2214; }
+  .kanban-card h4 { color: #173c28; font-size: 15px; font-weight: 700; }
+  .kanban-card:hover { border-color: #7fad89; box-shadow: 0 8px 20px #143a2226; }
+  .report-stat { border-top: 3px solid #7fa883; }
+  .report-stat > strong { color: #1b4c30; font-weight: 800; }
+
+  .person-card { border-color: #d6e3d9; }
+  .person-card h3 { color: #1d402b; font-weight: 750; }
+  .person-card > p, .person-brigade { color: #58715e; font-size: 12px; }
+  .person-metrics small { color: #526b57; font-size: 11px; }
+  .person-metrics strong { color: #245538; font-weight: 750; }
+
+  .availability { padding: 6px 9px; border-radius: 7px; font-size: 11px; font-weight: 700; }
+  .availability i { width: 6px; height: 6px; }
+  .availability.free { color: #25633e; background: #e7f2e7; }
+  .availability.busy { color: #9b5b20; background: #f9ecdb; }
+  .availability.queued { color: #43688f; background: #eaf1f9; }
+  .availability.off_shift { color: #617367; background: #edf1ec; }
+
+  .equipment-grid { gap: 18px; }
+  .equipment-card {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    min-height: 305px;
+    padding: 23px;
+    overflow: hidden;
+    border-color: #cddfd2;
+    background: linear-gradient(180deg, #fff 0%, #fff 70%, #fbfdfb 100%);
+    box-shadow: 0 6px 19px #183b2414;
+  }
+  .equipment-card::before {
+    content: '';
+    position: absolute;
+    inset: 0 0 auto;
+    height: 4px;
+    background: linear-gradient(90deg, #245d3c, #85b36e);
+  }
+  .equipment-card:hover { border-color: #77a584; box-shadow: 0 11px 28px #183b2426; transform: translateY(-2px); }
+  .equipment-card-top { margin-bottom: 18px; }
+  .equipment-symbol { width: 52px; height: 52px; border-radius: 12px; background: #e8f3e8; color: #2b7045; }
+  .equipment-card > small { color: #56745d; font-size: 11px; font-weight: 750; letter-spacing: .7px; }
+  .equipment-card h3 { min-height: 48px; margin: 9px 0 5px; color: #173c28; font-size: 18px; font-weight: 780; line-height: 1.35; }
+  .equipment-card > p { min-height: 32px; margin: 0; color: #4e6c58; font-size: 13px; font-weight: 500; line-height: 1.35; }
+  .equipment-metrics {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+    margin-top: auto;
+    padding: 17px 0 16px;
+  }
+  .equipment-metrics > span {
+    min-width: 0;
+    padding: 10px 9px;
+    border-radius: 10px;
+    background: #edf5ee;
+    color: #4b6a53;
+    font-size: 10px;
+    font-weight: 650;
+    line-height: 1.3;
+  }
+  .equipment-metrics > span:nth-child(2) { background: #fbf1e6; color: #835626; }
+  .equipment-metrics > span:nth-child(3) { background: #eef4f6; color: #41646d; }
+  .equipment-metrics strong { display: block; margin-bottom: 4px; color: #16452d; font-size: 21px; font-weight: 800; line-height: 1; }
+  .equipment-metrics > span:nth-child(2) strong { color: #98591c; }
+  .equipment-metrics > span:nth-child(3) strong { color: #315c67; }
+  .equipment-card .person-task { padding-top: 14px; border-top-color: #dce8de; color: #23633e; font-size: 12px; font-weight: 750; }
+  .equipment-card .person-task svg { stroke-width: 2.2; }
+}
+
+@media screen and (max-width: 760px) {
+  .page-heading h1 { font-size: 26px; }
+  .page-heading p { font-size: 13px; }
+  .equipment-card { min-height: 285px; }
+  .equipment-card h3 { min-height: 0; font-size: 18px; }
+  .equipment-card > p { min-height: 0; }
+}
+
+@media screen and (max-width: 460px) {
+  .page-heading h1 { font-size: 24px; }
+  .equipment-card { padding: 20px; }
+  .equipment-metrics > span { font-size: 10px; }
+  .equipment-metrics strong { font-size: 20px; }
+}

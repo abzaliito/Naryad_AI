@@ -1,0 +1,14 @@
+# Only source files needed to build and run the application enter the image.
+**
+!package.json
+!package-lock.json
+!index.html
+!tsconfig.json
+!vite.config.ts
+!src/
+!src/**
+!public/
+!public/**
+!server/
+!server/**
+!Dockerfile

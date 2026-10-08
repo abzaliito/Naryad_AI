@@ -1,0 +1,196 @@
+/* Readability and hierarchy across the production interface. */
+@media screen {
+  :root {
+    color: #20362b;
+    background: #f7f9f8;
+    --muted: #566c60;
+    --line: #dbe5df;
+    --shadow: 0 3px 14px #1537230e;
+  }
+
+  .sidebar { color: #cdddcf; }
+  .sidebar .brand small { color: #b9cbb8; font-size: 7px; font-weight: 650; }
+  .nav-item { min-height: 48px; border-radius: 9px; font-size: 14px; font-weight: 500; }
+  .nav-item svg { color: #b3c8b6; stroke-width: 1.9; }
+  .nav-item:hover { background: #ffffff14; color: #fff; }
+  .nav-item.active { background: #e4edcc; color: #193925; font-weight: 700; }
+  .nav-item.active svg { color: #315c36; }
+  .nav-item b { color: #d4e5d2; font-size: 11px; font-weight: 650; }
+  .nav-item.active b { color: #315339; }
+  .user-profile { color: #f2f6ef; }
+  .user-profile > span:nth-child(2) { font-size: 13px; font-weight: 650; }
+  .user-profile small { color: #b7cbb9; font-size: 11px; }
+
+  .topbar { border-bottom-color: var(--line); }
+  .breadcrumb { color: #62766b; font-size: 13px; }
+  .breadcrumb strong { color: #173a29; font-weight: 700; }
+  .page-heading h1 { color: #162e22; font-weight: 750; }
+  .page-heading p { color: #536a5d; font-size: 14px; line-height: 1.5; }
+  .button { font-size: 14px; font-weight: 650; border-radius: 8px; }
+  .button.secondary { border-color: #cbd9ce; color: #244a33; }
+  .text-button { color: #245b38; font-size: 12px; font-weight: 650; }
+
+  .panel, .stat-card, .filterbar { border-color: var(--line); box-shadow: var(--shadow); }
+  .filterbar { min-height: 56px; padding: 9px 14px; }
+  .filter-left select {
+    min-height: 37px;
+    background: #f3f6f3;
+    color: #314d3b;
+    font-size: 13px;
+    font-weight: 500;
+  }
+  .search { color: #647b69; }
+  .search input { color: #243b2d; font-size: 13px; }
+  .search input::placeholder { color: #687d70; }
+  .tabs > button { color: #64786a; font-size: 13px; font-weight: 550; }
+  .tabs > button.active { color: #245b36; font-weight: 700; }
+  .tabs > button span { color: #365e3f; font-size: 11px; font-weight: 650; }
+  .view-toggle { border-color: var(--line); }
+  .view-toggle button { color: #5d7361; }
+  .view-toggle button.active { color: #2b673c; }
+
+  .stat-label { color: #3d5848; font-size: 13px; font-weight: 650; }
+  .stat-value { color: #142e20; font-weight: 750; }
+  .stat-card p { color: #5f7364; font-size: 12px; }
+  .stat-indicator { color: #477c50; font-size: 10px; font-weight: 650; }
+  .stat-indicator.warning { color: #9b602d; }
+  .panel-heading h2, .panel-heading h3 { color: #1b3928; font-size: 17px; font-weight: 700; }
+  .panel-heading p { color: #617669; font-size: 12px; }
+  .panel-heading > small, .panel-subtitle { color: #607468; font-size: 11px; }
+  .chart-legend { color: #52685b; font-size: 12px; }
+  .chart-footer > span, .chart-footer .text-button { color: #526f5a; font-size: 11px; }
+  .attention-item strong { color: #254434; font-size: 13px; font-weight: 650; }
+  .attention-item p { color: #596e60; font-size: 12px; }
+  .attention-item small { color: #715f50; font-size: 11px; }
+  .attention-footer { color: #5b705f; font-size: 11px; }
+  .team-person strong { color: #2b4a32; font-size: 12px; font-weight: 650; }
+  .team-person small { color: #627a68; font-size: 11px; }
+
+  .order-table th, .data-table th {
+    background: #f6f9f6;
+    color: #455d4b;
+    font-size: 11px;
+    font-weight: 700;
+  }
+  .order-table td, .data-table td { color: #304637; font-size: 12px; }
+  .order-table td > small, .data-table td small { color: #627765; font-size: 11px; }
+  .order-title-button, .order-title-button strong { color: #254032; font-size: 12px; font-weight: 650; }
+  .order-id { color: #58705f; font-size: 11px; font-weight: 550; }
+  .table-person, .due-cell { color: #364f3d; font-size: 12px; }
+
+  .kanban-column { background: #edf2ee; border-color: #dfe7e1; }
+  .kanban-column > h3 { color: #344d3c; font-size: 13px; font-weight: 700; }
+  .kanban-column > h3 > span { color: #617669; font-size: 11px; font-weight: 650; }
+  .kanban-card { border-color: #dce6dd; box-shadow: 0 2px 9px #173b250d; }
+  .kanban-card:hover { border-color: #95b79c; box-shadow: 0 6px 18px #173b2519; }
+  .kanban-card-top > span:first-child { color: #58705c; font-size: 11px; font-weight: 600; }
+  .kanban-card-top .badge { font-size: 9px; }
+  .kanban-card h4 { color: #193d2a; font-size: 14px; font-weight: 650; line-height: 1.5; }
+  .kanban-card > p { color: #607664; font-size: 11px; }
+  .kanban-card-bottom { border-top-color: #e6ece6; }
+  .kanban-card-bottom > div, .kanban-card-bottom > .overdue-text,
+  .kanban-card-bottom > span { color: #4e6854; font-size: 11px; }
+  .kanban-card-bottom > div > span:last-child { max-width: 120px; }
+  .kanban-card-bottom .avatar.small { font-size: 9px; width: 26px; height: 26px; }
+  .kanban-empty { color: #637b68; font-size: 12px; }
+
+  .badge { font-size: 10px; font-weight: 700; }
+  .badge.issued, .badge.normal { color: #376181; }
+  .badge.accepted { color: #26725e; }
+  .badge.queued { color: #536c98; }
+  .badge.in_progress, .badge.high { color: #946222; }
+  .badge.paused { color: #6b6958; }
+  .badge.completed, .badge.closed { color: #347344; }
+  .badge.ai_review { color: #76539a; }
+  .badge.rework { color: #955a34; }
+  .badge.rejected, .badge.emergency { color: #a84930; }
+  .badge.planned { color: #5b704e; }
+
+  .person-card h3, .equipment-card h3, .anomaly-card h3,
+  .settings-card h2, .assistant-welcome h2, .modal-header h2,
+  .detail-heading h2 { color: #1f3b2a; font-weight: 700; }
+  .person-card h3, .equipment-card h3 { font-size: 16px; }
+  .person-card > p, .equipment-card > p, .anomaly-card > p,
+  .settings-card > p, .assistant-welcome p, .form-intro p,
+  .detail-section > p, .assessment-checks p, .summary-banner p { color: #536a59; }
+  .person-card > p, .equipment-card > p { font-size: 12px; }
+  .report-stat > span { color: #536b58; font-size: 13px; font-weight: 650; }
+  .report-stat > strong { color: #23482e; font-weight: 750; }
+  .report-tabs > button { color: #5e725f; font-size: 13px; }
+  .period-toggle { border-color: var(--line); }
+  .period-toggle button { color: #546b5b; font-size: 12px; font-weight: 600; min-height: 38px; }
+  .period-toggle button.active { color: #245638; background: #e6eddf; font-weight: 700; }
+  .summary-banner h3 { color: #294d36; font-size: 15px; font-weight: 700; }
+  .summary-banner p, .anomaly-card > p { font-size: 14px; }
+  .summary-banner small { color: #657a68; font-size: 11px; }
+  .anomaly-recommendation { color: #536d53; font-size: 12px; }
+  .notification-item strong { color: #2b5736; font-size: 12px; font-weight: 700; }
+  .notification-item p { color: #536d55; font-size: 12px; }
+  .notification-item small { color: #657d67; font-size: 10px; }
+  .notification-actions .text-button { font-size: 12px; }
+  .worker-intro h2 { color: #21442d; font-weight: 700; }
+  .worker-intro p, .worker-metrics span, .worker-order > p { color: #526b57; }
+  .worker-metrics strong { color: #245136; font-weight: 750; }
+  .worker-order-heading, .worker-order-meta > span:last-child { color: #5c755f; font-size: 12px; }
+  .worker-order h3 { color: #244831; font-weight: 700; }
+
+  .modal label { color: #3b5745; font-size: 13px; font-weight: 600; }
+  .modal input, .modal select, .modal textarea { color: #263d2e; }
+  .detail-heading > p { color: #5b715f; font-size: 12px; }
+  .detail-heading > p > span { color: #819684; }
+  .detail-tabs .print-button { color: #426d4c; font-size: 11px; }
+  .detail-info-grid > div > small, .timeline-event small { color: #607767; font-size: 11px; }
+  .detail-info-grid strong, .inline-user { color: #2a4932; font-size: 13px; }
+  .detail-section > p, .assessment-checks p { font-size: 13px; }
+  .provider-note { color: #627763; font-size: 11px; }
+  .settings-card > small { color: #617768; font-size: 11px; }
+  .suggestion-chips button { color: #365b40; border-color: #dce7da; background: #fff; font-size: 12px; }
+  .chat-form input { color: #294530; font-size: 13px; }
+  .equipment-ranking strong { color: #2b4934; }
+  .login-form > label { color: #3b5844; font-size: 14px; font-weight: 650; }
+  .login-form input { color: #263f2c; border-color: #d7e2d6; }
+  .login-demo > span, .login-note { color: #647b65; font-size: 11px; }
+  .login-demo button { color: #4c7050; font-size: 12px; }
+  .page-footer { color: #63776a; font-size: 10px; }
+}
+
+@media screen and (max-width: 1250px) {
+  .nav-item { font-size: 13px; }
+  .page-heading p { font-size: 13px; }
+  .filter-left select, .search input { font-size: 12px; }
+  .stat-label { font-size: 12px; }
+  .panel-heading h2, .panel-heading h3 { font-size: 16px; }
+}
+
+@media screen and (max-width: 760px) {
+  .nav-item { font-size: 14px; }
+  .page-heading p { font-size: 13px; }
+  .stat-card p { font-size: 11px; }
+  .chart-legend { font-size: 11px; }
+  .tabs > button { font-size: 12px; }
+  .kanban-card h4 { font-size: 14px; }
+  .kanban-card > p, .kanban-card-bottom > div { font-size: 11px; }
+}
+
+@media screen and (max-width: 460px) {
+  .page-heading h1 { font-size: 24px; }
+  .page-heading p { font-size: 12px; }
+  .filterbar { display: block; }
+  .filter-left { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; width: 100%; }
+  .filter-left > svg { display: none; }
+  .filter-left select {
+    width: 100%;
+    max-width: none;
+    min-width: 0;
+    min-height: 42px;
+    padding: 8px 27px 8px 10px;
+    font-size: 12px;
+  }
+  .search { width: 100%; padding-top: 10px; margin-top: 9px; border-top: 1px solid #e0e8e1; }
+  .stat-label { font-size: 11px; }
+  .stat-card p { font-size: 10px; }
+  .stat-indicator { font-size: 9px; }
+  .panel-heading h2, .panel-heading h3 { font-size: 15px; }
+  .chart-legend { font-size: 10px; }
+  .kanban-card-top .badge { font-size: 9px; }
+}

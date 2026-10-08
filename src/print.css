@@ -1,0 +1,251 @@
+.order-print {
+  display: none;
+}
+
+@media print {
+  body:has(.order-print) {
+    overflow: visible !important;
+    background: #fff;
+  }
+
+  /* A selected order owns the printout, including when opened over equipment history. */
+  body:has(.order-print) .modal-backdrop:not(:has(.order-print)),
+  body:has(.order-print) .modal:not(:has(.order-print)),
+  body:has(.order-print) .offline-banner {
+    display: none !important;
+  }
+
+  .modal-backdrop:has(.order-print),
+  .modal:has(.order-print) {
+    position: static !important;
+    display: block !important;
+    width: 100% !important;
+    max-width: none !important;
+    height: auto !important;
+    max-height: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    overflow: visible !important;
+    background: #fff !important;
+    box-shadow: none !important;
+    backdrop-filter: none !important;
+  }
+
+  .modal:has(.order-print) > .modal-header,
+  .modal:has(.order-print) > .detail-content,
+  .modal:has(.modal .order-print) > .order-print {
+    display: none !important;
+  }
+
+  /* If order dialogs are nested, only the innermost saved order report is shown. */
+  .modal:has(> .order-print):not(:has(.modal .order-print)) > .order-print {
+    display: block !important;
+  }
+
+  .order-print {
+    font-family: "Segoe UI", Arial, sans-serif;
+    font-size: 10pt;
+    line-height: 1.45;
+    color: #17251c;
+    overflow-wrap: anywhere;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .order-print .order-print-header {
+    margin: 0 0 8mm;
+    padding-bottom: 5mm;
+    border-bottom: 2px solid #28563a;
+    break-inside: avoid;
+  }
+
+  .order-print .order-print-header > p:first-child {
+    margin-bottom: 3mm;
+    color: #44584b;
+    font-size: 9pt;
+  }
+
+  .order-print h1 {
+    font-size: 23pt;
+    line-height: 1.15;
+    letter-spacing: -.4pt;
+    margin: 0 0 3mm;
+  }
+
+  .order-print h2 {
+    margin: 6mm 0 3mm;
+    font-size: 13pt;
+    color: #234c34;
+    break-after: avoid;
+  }
+
+  .order-print .order-print-header h2 {
+    color: #17251c;
+    font-size: 16pt;
+    margin: 0 0 3mm;
+  }
+
+  .order-print h3 {
+    margin: 4mm 0 2mm;
+    font-size: 10.5pt;
+    break-after: avoid;
+  }
+
+  .order-print p {
+    margin: 0 0 2.5mm;
+    orphans: 3;
+    widows: 3;
+  }
+
+  .order-print .order-print-text {
+    white-space: pre-wrap;
+  }
+
+  .order-print .order-print-muted {
+    color: #526259;
+    font-size: 9pt;
+  }
+
+  .order-print .order-print-facts {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 3mm 7mm;
+    margin: 0;
+  }
+
+  .order-print .order-print-facts > div {
+    break-inside: avoid;
+  }
+
+  .order-print dt {
+    color: #53665a;
+    font-size: 8pt;
+    margin-bottom: 1mm;
+  }
+
+  .order-print dd {
+    margin: 0;
+    font-weight: 600;
+  }
+
+  .order-print table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 2.5mm 0 4mm;
+    table-layout: fixed;
+    font-size: 8.5pt;
+    line-height: 1.4;
+  }
+
+  .order-print thead {
+    display: table-header-group;
+  }
+
+  .order-print th,
+  .order-print td {
+    padding: 2mm;
+    text-align: left;
+    vertical-align: top;
+    border: 1px solid #cdd7ce;
+  }
+
+  .order-print th {
+    font-weight: 600;
+    background: #edf3ee;
+    color: #1f3b29;
+  }
+
+  .order-print tr {
+    break-inside: avoid;
+  }
+
+  .order-print .order-print-checks th:first-child {
+    width: 26%;
+  }
+
+  .order-print .order-print-checks th:nth-child(2) {
+    width: 18%;
+  }
+
+  .order-print .order-print-timeline th:first-child {
+    width: 25%;
+  }
+
+  .order-print .order-print-timeline th:nth-child(2) {
+    width: 30%;
+  }
+
+  .order-print .order-print-transition {
+    display: block;
+    margin-top: 1mm;
+    color: #53665a;
+  }
+
+  .order-print ul {
+    margin: 0 0 3mm;
+    padding-left: 6mm;
+  }
+
+  .order-print li {
+    margin-bottom: 1mm;
+    break-inside: avoid;
+  }
+
+  .order-print .order-print-assessment {
+    display: flex;
+    flex-direction: column;
+    gap: 1mm;
+    background: #f2f6f1;
+    border-left: 3px solid #366746;
+    padding: 3mm 4mm;
+    margin-bottom: 3mm;
+    break-inside: avoid;
+  }
+
+  .order-print .order-print-photos {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 5mm;
+  }
+
+  .order-print figure {
+    margin: 0;
+    break-inside: avoid;
+  }
+
+  .order-print figure img {
+    display: block;
+    width: 100%;
+    height: 58mm;
+    object-fit: contain;
+    border: 1px solid #d4ddd5;
+    background: #fafcf9;
+  }
+
+  .order-print figcaption {
+    font-size: 8pt;
+    line-height: 1.4;
+    padding-top: 2mm;
+  }
+
+  .order-print figcaption span {
+    display: block;
+  }
+
+  .order-print .order-print-attempt {
+    border-top: 1px solid #b7cbb9;
+    margin-top: 4mm;
+    padding-top: 1mm;
+  }
+
+  .order-print .order-print-footer {
+    margin-top: 8mm;
+    padding-top: 3mm;
+    border-top: 1px solid #cdd7ce;
+    color: #526259;
+    font-size: 8pt;
+    break-inside: avoid;
+  }
+}

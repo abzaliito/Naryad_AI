@@ -1,0 +1,35 @@
+name: naryad-ai
+
+services:
+  app:
+    build:
+      context: .
+    init: true
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-3001}:3001"
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: "3001"
+      DATA_DIR: /app/data
+      APP_ORIGIN: ${APP_ORIGIN:-}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:admin@example.invalid}
+      AI_BASE_URL: ${AI_BASE_URL:-}
+      AI_MODEL: ${AI_MODEL:-}
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_SEND_PHOTOS: ${AI_SEND_PHOTOS:-false}
+    volumes:
+      - naryad_data:/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    stop_grace_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  naryad_data:

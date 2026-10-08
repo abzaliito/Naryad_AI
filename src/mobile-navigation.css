@@ -1,0 +1,135 @@
+/* Mobile navigation uses the existing product identity and role-aware sections. */
+@media screen and (max-width: 760px) {
+  .topbar {
+    position: sticky;
+    top: 10px;
+    z-index: 61;
+    width: calc(100% - 24px);
+    height: 60px;
+    margin: 10px 12px 0;
+    padding: 0 8px 0 13px;
+    border: 1px solid #dbe5dd;
+    border-radius: 999px;
+    background: #fff;
+    box-shadow: 0 8px 26px #1334201c;
+  }
+
+  .mobile-brand { align-items: center; min-width: 0; }
+  .mobile-brand .brand {
+    gap: 9px;
+    white-space: nowrap;
+    color: #193a27;
+    font-size: 22px;
+    font-weight: 800;
+    letter-spacing: -1.1px;
+  }
+  .mobile-brand .brand-symbol { width: 36px; height: 38px; border-radius: 11px; }
+  .mobile-brand .brand-symbol svg { width: 23px; height: 23px; }
+  .mobile-brand .brand-ai { color: #6e9854; font-weight: 750; }
+  .mobile-brand .brand small { display: none; }
+
+  .topbar .breadcrumb, .topbar-right > .avatar { display: none; }
+  .topbar-right { gap: 5px; }
+  .topbar .notification-button,
+  .topbar .mobile-menu-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 42px;
+    height: 42px;
+    min-width: 42px;
+    min-height: 42px;
+    margin: 0;
+    border-radius: 50%;
+    background: #f2f6f2;
+    color: #23452f;
+  }
+  .topbar .mobile-menu-toggle {
+    border: 1px solid #dce8dd;
+  }
+  .topbar .notification-button:hover,
+  .topbar .mobile-menu-toggle:hover,
+  .topbar .mobile-menu-toggle[aria-expanded="true"] {
+    background: #e7f0e3;
+    color: #1e502f;
+  }
+  .topbar .mobile-menu-toggle[aria-expanded="true"] { border-color: #9fbe9c; }
+  .topbar .notification-button:focus-visible,
+  .topbar .mobile-menu-toggle:focus-visible { outline: 2px solid #358051; outline-offset: 2px; }
+
+  .sidebar-backdrop { background: #0b1e13a6; backdrop-filter: blur(3px); }
+  .sidebar {
+    inset: 79px 12px 12px;
+    width: auto;
+    height: auto;
+    padding: 16px 14px 12px;
+    border: 1px solid #e3eae3;
+    border-radius: 25px;
+    background: #fff;
+    box-shadow: 0 20px 60px #071b0f4d;
+    color: #203a29;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    transform: translateY(-12px) scale(.985);
+    transform-origin: top center;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition: transform .2s ease, opacity .2s ease, visibility .2s ease;
+  }
+  .sidebar.mobile-open {
+    transform: none;
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+  }
+  .sidebar > .brand { display: none; }
+  .sidebar nav { display: flex; flex-direction: column; gap: 3px; }
+  .sidebar .nav-item {
+    min-height: 55px;
+    margin: 0;
+    padding: 11px 14px;
+    gap: 13px;
+    border-radius: 14px;
+    color: #20392a;
+    font-size: 16px;
+    font-weight: 680;
+    line-height: 1.25;
+  }
+  .sidebar .nav-item svg { width: 21px; height: 21px; color: #56755c; stroke-width: 2; flex: none; }
+  .sidebar .nav-item:hover { background: #f0f5ee; color: #183d29; }
+  .sidebar .nav-item.active { background: #e4efd9; color: #183d29; font-weight: 750; box-shadow: none; }
+  .sidebar .nav-item.active svg { color: #2e6139; }
+  .sidebar .nav-item b {
+    min-width: 25px;
+    padding: 3px 6px;
+    border-radius: 7px;
+    background: #edf4e7;
+    color: #355c3c;
+    font-size: 11px;
+    text-align: center;
+  }
+  .sidebar .tiny-ai { color: #315f3c; border-color: #8eb88f; }
+  .sidebar-bottom { padding-top: 11px; border-top: 1px solid #e8eee8; }
+  .sidebar .user-profile {
+    min-height: 70px;
+    margin-top: 8px;
+    padding: 10px 12px;
+    border: 1px solid #e4ebe4;
+    border-radius: 14px;
+    background: #f7faf7;
+    color: #203c2b;
+  }
+  .sidebar .user-profile > span:nth-child(2) { font-size: 13px; font-weight: 700; }
+  .sidebar .user-profile small { color: #5b725e; font-size: 11px; font-weight: 500; }
+  .sidebar .user-profile > svg { color: #55735a; }
+  .notification-panel { top: 80px; right: 12px; max-height: calc(100dvh - 92px); }
+}
+
+@media screen and (max-width: 360px) {
+  .mobile-brand .brand { font-size: 19px; gap: 7px; }
+  .mobile-brand .brand-symbol { width: 32px; height: 34px; }
+  .topbar .notification-button,
+  .topbar .mobile-menu-toggle { width: 39px; height: 39px; min-width: 39px; min-height: 39px; }
+  .sidebar .nav-item { font-size: 15px; }
+}
