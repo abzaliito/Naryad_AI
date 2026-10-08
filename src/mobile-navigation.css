@@ -35,18 +35,23 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 42px;
-    height: 42px;
-    min-width: 42px;
-    min-height: 42px;
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
     margin: 0;
     border-radius: 50%;
     background: #f2f6f2;
     color: #23452f;
   }
   .topbar .mobile-menu-toggle {
+    width: 48px;
+    height: 48px;
+    min-width: 48px;
+    min-height: 48px;
     border: 1px solid #dce8dd;
   }
+  .topbar .mobile-menu-toggle svg { width: 26px; height: 26px; stroke-width: 2.2; }
   .topbar .notification-button:hover,
   .topbar .mobile-menu-toggle:hover,
   .topbar .mobile-menu-toggle[aria-expanded="true"] {
@@ -130,6 +135,6 @@
   .mobile-brand .brand { font-size: 19px; gap: 7px; }
   .mobile-brand .brand-symbol { width: 32px; height: 34px; }
   .topbar .notification-button,
-  .topbar .mobile-menu-toggle { width: 39px; height: 39px; min-width: 39px; min-height: 39px; }
+  .topbar .mobile-menu-toggle { width: 44px; height: 44px; min-width: 44px; min-height: 44px; }
   .sidebar .nav-item { font-size: 15px; }
 }

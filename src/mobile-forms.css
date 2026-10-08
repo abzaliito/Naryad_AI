@@ -1,0 +1,113 @@
+/* Phone dialogs keep native inputs inside one readable, touch-friendly column. */
+@media screen and (max-width: 760px) {
+  .modal-backdrop {
+    --dialog-top: max(8px, env(safe-area-inset-top, 0px));
+    --dialog-bottom: max(8px, env(safe-area-inset-bottom, 0px));
+    padding: var(--dialog-top) max(8px, env(safe-area-inset-right, 0px)) var(--dialog-bottom) max(8px, env(safe-area-inset-left, 0px));
+    overflow: hidden;
+    overscroll-behavior: contain;
+  }
+
+  .modal, .modal.wide {
+    min-width: 0;
+    max-width: 560px;
+    max-height: calc(100dvh - var(--dialog-top) - var(--dialog-bottom));
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scroll-padding-top: 80px;
+    border-radius: 18px;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .modal-header {
+    gap: 10px;
+    padding: 12px 16px;
+    border-radius: 17px 17px 0 0;
+  }
+  .modal-header h2 { min-width: 0; font-size: 17px; line-height: 1.35; font-weight: 750; }
+  .modal-header .icon-button { flex: 0 0 44px; width: 44px; min-height: 44px; color: #45624f; }
+  .modal .form-content, .modal .detail-content { min-width: 0; padding: 20px 16px; }
+  .modal .form-content { gap: 20px; }
+  .modal .form-grid { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+  .modal .form-grid > *, .modal .textarea-wrap { min-width: 0; max-width: 100%; }
+
+  .modal label:not(.checkbox-label):not(.upload-zone) {
+    min-width: 0;
+    max-width: 100%;
+    color: #34533f;
+    font-size: 14px;
+    font-weight: 650;
+    line-height: 1.45;
+  }
+  .modal label b { color: #b55c35; font-size: 14px; }
+  .modal label > small { display: block; color: #617166; font-size: 11px; }
+  .modal input:not([type="checkbox"]):not([type="file"]),
+  .modal select, .modal .form-content select,
+  .modal textarea {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    min-height: 48px;
+    box-sizing: border-box;
+    padding: 12px;
+    border-color: #cddbd1;
+    border-radius: 10px;
+    background: #fff;
+    color: #243f2e;
+    font-size: 16px;
+    font-weight: 500;
+    line-height: 1.45;
+  }
+  .modal select, .modal .form-content select {
+    appearance: none;
+    -webkit-appearance: none;
+    overflow: hidden;
+    padding-right: 36px;
+    text-overflow: ellipsis;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23486351' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+    background-size: 16px;
+  }
+  .modal input[type="date"], .modal input[type="datetime-local"] { appearance: none; -webkit-appearance: none; }
+  .modal input::-webkit-date-and-time-value { min-height: 1.45em; text-align: left; }
+  .modal input::-webkit-datetime-edit { padding: 0; }
+  .modal .textarea-wrap textarea { min-height: 116px; padding-bottom: 48px; }
+  .modal .voice-button { min-height: 36px; font-size: 12px; }
+  .modal .checkbox-label { min-height: 44px; font-size: 13px; line-height: 1.5; }
+  .modal .checkbox-label input { flex: 0 0 20px; width: 20px; height: 20px; min-height: 20px; }
+
+  .modal .form-intro p { margin-top: 7px; color: #596f5e; font-size: 13px; line-height: 1.55; }
+  .modal .template-row { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .modal .template-row > button { justify-content: flex-start; min-height: 44px; padding: 11px 13px; font-size: 13px; color: #345d3d; }
+  .modal .template-row > button svg { width: 17px; height: 17px; }
+  .modal .recommendation, .modal .fault-suggestion {
+    display: grid;
+    grid-template-columns: 20px minmax(0, 1fr);
+    align-items: start;
+    gap: 6px 10px;
+    padding: 14px;
+    border-radius: 12px;
+  }
+  .modal .recommendation > svg, .modal .fault-suggestion > svg { margin-top: 2px; color: #5d8055; }
+  .modal .recommendation strong { color: #345e3f; font-size: 13px; font-weight: 700; line-height: 1.5; }
+  .modal .recommendation p > span, .modal .fault-suggestion small { color: #5d735e; font-size: 12px; line-height: 1.6; }
+  .modal .recommendation > button, .modal .fault-suggestion > button { grid-column: 2; justify-self: start; min-height: 44px; max-width: 100%; white-space: normal; font-size: 13px; }
+  .modal .form-content > .text-button { min-height: 44px; white-space: normal; text-align: left; font-size: 13px; }
+  .modal .form-content > .text-button > svg { flex-shrink: 0; }
+  .modal .form-footer { align-items: stretch; gap: 15px; padding-top: 18px; }
+  .modal .form-footer > span, .modal .form-footer > small { color: #627366; font-size: 12px; line-height: 1.6; }
+  .modal .form-footer > span { align-items: flex-start; }
+  .modal .form-footer > span svg { margin-top: 3px; }
+  .modal .form-footer > .button { width: 100%; align-self: stretch; min-height: 50px; font-size: 15px; white-space: normal; }
+  .modal .field-heading { flex-wrap: wrap; gap: 6px 12px; }
+  .modal .field-heading h3 { font-size: 14px; color: #34533f; }
+  .modal .field-heading > button { min-height: 44px; font-size: 13px; }
+  .modal .material-form-row { display: grid; grid-template-columns: minmax(0, 1fr) 44px; gap: 8px; }
+  .modal .material-form-row select { grid-column: 1 / -1; }
+  .modal .material-form-row .icon-button { width: 44px; min-height: 48px; border: 1px solid #d4e0d7; }
+  .modal .upload-zone { padding: 20px 14px; }
+  .modal .upload-zone > strong { font-size: 14px; }
+  .modal .upload-zone > span { color: #617661; font-size: 12px; line-height: 1.5; }
+}
